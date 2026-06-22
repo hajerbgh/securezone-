@@ -1,0 +1,243 @@
+version: "3.9"
+
+# ══════════════════════════════════════════════════════════════════
+#  SecureZone — Docker Compose
+#  Démarrage : docker compose up -d
+#  Arrêt     : docker compose down
+#  Logs      : docker compose logs -f backend
+# ══════════════════════════════════════════════════════════════════
+
+networks:
+  securezone_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  postgres_data:
+  redis_data:
+  elasticsearch_data:
+  wazuh_data:
+  wazuh_logs:
+  wazuh_etc:
+  nginx_certs:
+
+services:
+
+  # ──────────────────────────────────────────
+  # 1. PostgreSQL — Base de données principale
+  # ──────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: sz_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-securezone_db}
+      POSTGRES_USER:     ${POSTGRES_USER:-securezone}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-securezone_secret}
+      PGDATA:            /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - securezone_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-securezone} -d ${POSTGRES_DB:-securezone_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ──────────────────────────────────────────
+  # 2. Redis — Cache + file de tâches
+  # ──────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: sz_redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_secret} --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - securezone_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────────────────────────────────
+  # 3. Elasticsearch — Indexation des logs
+  # ──────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: sz_elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      - xpack.security.enabled=false      # Auth désactivée (réseau interne Docker)
+      - xpack.security.http.ssl.enabled=false
+      - cluster.name=securezone-cluster
+      - node.name=sz-es-node1
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - securezone_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  # ──────────────────────────────────────────
+  # 4. Backend FastAPI — Cœur de la plateforme
+  # ──────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sz_backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL:        postgresql+asyncpg://${POSTGRES_USER:-securezone}:${POSTGRES_PASSWORD:-securezone_secret}@postgres:5432/${POSTGRES_DB:-securezone_db}
+      REDIS_URL:           redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/0
+      ELASTICSEARCH_URL:   http://elasticsearch:9200
+      WAZUH_MANAGER_URL:   https://wazuh-manager:55000
+    volumes:
+      - ./backend:/app                    # Hot-reload en développement
+      - ./reports:/app/reports            # Rapports PDF générés
+    ports:
+      - "8000:8000"
+    networks:
+      - securezone_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ──────────────────────────────────────────
+  # 5. Frontend React — Dashboard
+  # ──────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sz_frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost/api/v1
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules            # Exclure node_modules du bind mount
+    ports:
+      - "3000:3000"
+    networks:
+      - securezone_net
+    depends_on:
+      - backend
+    command: npm run dev -- --host 0.0.0.0 --port 3000
+
+  # ──────────────────────────────────────────
+  # 6. Nginx — Reverse proxy + SSL termination
+  # ──────────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: sz_nginx
+    restart: unless-stopped
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - nginx_certs:/etc/nginx/certs
+      - ./frontend/dist:/usr/share/nginx/html:ro   # Build de prod
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - securezone_net
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t && curl -sf http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ──────────────────────────────────────────
+  # 7. Wazuh Manager — Collecte de logs SIEM
+  # ──────────────────────────────────────────
+  wazuh-manager:
+    image: wazuh/wazuh-manager:4.8.0
+    container_name: sz_wazuh
+    restart: unless-stopped
+    hostname: wazuh-manager
+    environment:
+      INDEXER_URL:      https://elasticsearch:9200
+      INDEXER_USERNAME: admin
+      INDEXER_PASSWORD: ${WAZUH_INDEXER_PASSWORD:-SecureIndex1!}
+      FILEBEAT_SSL_VERIFICATION_MODE: none
+      SSL_CERTIFICATE_AUTHORITIES: ""
+    volumes:
+      - wazuh_data:/var/ossec/data
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_etc:/var/ossec/etc
+      - ./wazuh/ossec.conf:/wazuh-config-mount/etc/ossec.conf:ro
+    ports:
+      - "1514:1514/udp"    # Agents Wazuh (syslog)
+      - "1515:1515"        # Enregistrement agents
+      - "55000:55000"      # API Wazuh REST
+    networks:
+      - securezone_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -k https://localhost:55000/ | grep -q 'Wazuh'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # ──────────────────────────────────────────
+  # 8. Kibana — Visualisation logs (optionnel)
+  # ──────────────────────────────────────────
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    container_name: sz_kibana
+    restart: unless-stopped
+    profiles: ["monitoring"]             # Désactivé par défaut — activer avec --profile monitoring
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      SERVER_NAME: sz-kibana
+      XPACK_SECURITY_ENABLED: "false"
+    ports:
+      - "5601:5601"
+    networks:
+      - securezone_net
+    depends_on:
+      elasticsearch:
+        condition: service_healthy

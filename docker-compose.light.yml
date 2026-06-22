@@ -1,0 +1,69 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sz_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: securezone_db
+      POSTGRES_USER: securezone
+      POSTGRES_PASSWORD: securezone_secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks: [securezone_net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U securezone -d securezone_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: sz_redis
+    restart: unless-stopped
+    command: redis-server --requirepass redis_secret
+    ports:
+      - "6379:6379"
+    networks: [securezone_net]
+
+  backend:
+    build:
+      context: ./backend
+    container_name: sz_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://securezone:securezone_secret@postgres:5432/securezone_db
+      REDIS_URL: redis://:redis_secret@redis:6379/0
+      SECRET_KEY: dev-secret-key-change-in-production-1234567890abcdef
+      ALLOWED_ORIGINS: http://localhost:3000,http://localhost
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    networks: [securezone_net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: sz_frontend
+    restart: unless-stopped
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    networks: [securezone_net]
+    depends_on: [backend]
+    command: npm run dev -- --host 0.0.0.0 --port 3000
+
+networks:
+  securezone_net:
+    driver: bridge
+
+volumes:
+  postgres_data:

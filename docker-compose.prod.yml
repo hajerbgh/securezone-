@@ -1,0 +1,66 @@
+version: "3.9"
+
+# ══════════════════════════════════════════════════════════════════
+#  SecureZone — Overrides de production
+#  Usage : docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+#  Différences par rapport au dev :
+#    - Pas de bind mount du code source (image figée)
+#    - Backend avec multiple workers (Uvicorn + Gunicorn)
+#    - Frontend servi par Nginx (build statique)
+#    - Ressources limitées par service
+#    - Logs JSON vers stdout
+# ══════════════════════════════════════════════════════════════════
+
+services:
+
+  backend:
+    volumes: []                      # Pas de bind mount en prod
+    command: >
+      gunicorn app.main:app
+        --worker-class uvicorn.workers.UvicornWorker
+        --workers 4
+        --bind 0.0.0.0:8000
+        --timeout 120
+        --access-logfile -
+        --error-logfile -
+    environment:
+      DEBUG: "false"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+
+  frontend:
+    build:
+      target: production             # Utiliser le stage "production" du Dockerfile
+    volumes: []
+    command: []
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  nginx:
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d/securezone.prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - nginx_certs:/etc/nginx/certs:ro
+    ports:
+      - "80:80"
+      - "443:443"
+
+  postgres:
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  elasticsearch:
+    environment:
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g    # Plus de mémoire en prod
+    deploy:
+      resources:
+        limits:
+          memory: 3g
