@@ -49,6 +49,8 @@ async def create_scan(
     job = ScanJob(
         name=payload.name,
         ip_ranges=payload.ip_ranges,
+        exclude_ips=payload.exclude_ips,
+        port_range=payload.port_range,
         scanner_type=payload.scanner_type,
         is_scheduled=payload.is_scheduled,
         cron_expression=payload.cron_expression,
@@ -165,6 +167,55 @@ async def delete_scan(
     return {"message": f"Scan #{scan_id} supprimé"}
 
 
+@router.post("/from-alert/{alert_id}", response_model=ScanJobRead)
+async def trigger_scan_from_alert(
+    alert_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_analyst),
+):
+    """
+    Corrélation SIEM → VM Engine.
+
+    Déclenche un scan de vulnérabilités ciblé sur l'IP d'une alerte SIEM.
+    Utile quand le SIEM détecte une activité suspecte sur un hôte :
+    on vérifie immédiatement si des CVEs exploitables sont présentes.
+
+    L'IP utilisée est : destination_ip si disponible, sinon source_ip.
+    """
+    from app.models.alert import Alert
+    result = await db.execute(select(Alert).where(Alert.id == alert_id))
+    alert = result.scalar_one_or_none()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alerte SIEM introuvable")
+
+    ip = alert.destination_ip or alert.source_ip
+    if not ip:
+        raise HTTPException(
+            status_code=422,
+            detail="L'alerte n'a pas d'IP cible — impossible de lancer un scan"
+        )
+
+    job = ScanJob(
+        name=f"Scan auto [Alerte #{alert_id}] — {ip}",
+        ip_ranges=[ip],
+        exclude_ips=[],
+        scanner_type="full",
+        is_scheduled=False,
+        status="pending",
+        created_by_id=current_user.id,
+    )
+    db.add(job)
+    await db.flush()
+    await db.refresh(job)
+
+    background_tasks.add_task(_run_scan_background, job.id)
+    logger.info(
+        f"Scan de corrélation déclenché — Alerte #{alert_id} → IP {ip} | ScanJob #{job.id}"
+    )
+    return job
+
+
 # ─────────────────────────────────────────────
 # Tâche de fond — exécution du VM Engine
 # ─────────────────────────────────────────────
@@ -185,5 +236,19 @@ async def _run_scan_background(scan_job_id: int):
             await db.commit()
             logger.info(f"Background scan terminé : {summary}")
         except Exception as e:
-            await db.rollback()
+            # Rollback les données partielles mais persister le status "failed"
+            # dans une session séparée (le rollback annulerait le status sinon)
+            try:
+                async with AsyncSessionLocal() as fail_db:
+                    from sqlalchemy import select as _select
+                    result = await fail_db.execute(
+                        _select(ScanJob).where(ScanJob.id == scan_job_id)
+                    )
+                    job = result.scalar_one_or_none()
+                    if job:
+                        job.status = "failed"
+                        job.error_message = str(e)[:500]
+                        await fail_db.commit()
+            except Exception:
+                pass
             logger.error(f"Background scan #{scan_job_id} échoué : {e}")

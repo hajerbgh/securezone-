@@ -105,7 +105,13 @@ class ScanScheduler:
                 func=self._execute_scheduled_scan,
                 trigger=trigger,
                 id=job_id,
-                args=[scan_job.id, scan_job.ip_ranges, scan_job.scanner_type],
+                args=[
+                    scan_job.id,
+                    scan_job.ip_ranges,
+                    scan_job.scanner_type,
+                    scan_job.exclude_ips or [],
+                    scan_job.port_range,
+                ],
                 name=scan_job.name or f"Scan planifié #{scan_job.id}",
                 replace_existing=True,
                 misfire_grace_time=3600,  # Tolérance 1h si le serveur était down
@@ -165,6 +171,8 @@ class ScanScheduler:
         template_job_id: int,
         ip_ranges: list[str],
         scanner_type: str,
+        exclude_ips: list[str] | None = None,
+        port_range: str | None = None,
     ):
         """
         Callback APScheduler — exécuté automatiquement selon le cron.
@@ -175,6 +183,7 @@ class ScanScheduler:
         logger.info(
             f"Scheduler déclenche le scan planifié #{template_job_id} "
             f"| ranges={ip_ranges}"
+            + (f" | exclude={exclude_ips}" if exclude_ips else "")
         )
 
         # Ouvrir une session DB dédiée à ce job
@@ -184,6 +193,8 @@ class ScanScheduler:
                 execution_job = ScanJob(
                     name=f"Scan automatique - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}",
                     ip_ranges=ip_ranges,
+                    exclude_ips=exclude_ips or [],
+                    port_range=port_range,
                     scanner_type=scanner_type,
                     is_scheduled=False,  # C'est une exécution, pas un template
                     status="pending",

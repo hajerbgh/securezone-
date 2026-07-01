@@ -1,60 +1,56 @@
 """
-OpenVASScanner — Détection de vulnérabilités CVE via Greenbone/OpenVAS.
+OpenVASScanner — Détection de vulnérabilités CVE via Greenbone/GVM.
 
-Rôle dans SecureZone :
-  - Après le scan Nmap (on sait quels ports sont ouverts),
-    OpenVAS teste chaque service contre sa base de 80 000+ CVEs
-  - Retourne des vulnérabilités avec CVSS score, description, solution
-  - Ces vulnérabilités sont stockées dans la table `vulnerabilities`
+Protocole : GMP (Greenbone Management Protocol) over TLS, port 9390.
+Chaque commande GMP est un fragment XML terminé par un octet nul (\\0).
 
-Architecture OpenVAS :
-  GVM (Greenbone Vulnerability Manager) expose une API XML appelée GMP
-  (Greenbone Management Protocol). On l'interroge via HTTP/HTTPS.
+Flux d'un scan :
+  1. Connexion TLS → authentification
+  2. Créer une "target"  (liste d'IPs)
+  3. Créer un "task"     (config de scan + target)
+  4. Démarrer le task
+  5. Polling toutes les 30 s jusqu'à "Done"
+  6. Récupérer le rapport XML et parser les résultats
+  7. Nettoyer (suppression task + target)
 
-  Flux :
-    1. Créer une "target" (liste d'IPs à scanner)
-    2. Créer un "task" (lier une config de scan à une target)
-    3. Démarrer le task
-    4. Polling jusqu'à completion
-    5. Récupérer le "report" avec les vulnérabilités trouvées
+Mode simulation :
+  Si GVM est inaccessible (ou non configuré), le scanner bascule
+  automatiquement sur _mock_findings() — CVEs Metasploitable2 réalistes.
 """
 
 import asyncio
 import logging
+import socket
+import ssl
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Optional
-import httpx
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class CVEFinding:
-    """Une vulnérabilité détectée par OpenVAS."""
+    """Une vulnérabilité détectée par GVM/OpenVAS."""
     name: str
-    cve_id: str                    # "CVE-2024-1234" ou "" si pas de CVE
-    cvss_score: float              # 0.0 – 10.0
+    cve_id: str
+    cvss_score: float
     cvss_vector: str
-    severity: str                  # "Critical" | "High" | "Medium" | "Low" | "None"
+    severity: str          # "Critical" | "High" | "Medium" | "Low" | "None"
     description: str
     solution: str
     affected_ip: str
     affected_port: int
     affected_service: str
     references: list[str] = field(default_factory=list)
-    cpe: str = ""                  # Common Platform Enumeration
+    cpe: str = ""
 
     @property
     def severity_normalized(self) -> str:
-        """Normalise la sévérité pour correspondre à VulnSeverity enum."""
         mapping = {
-            "critical": "critical",
-            "high":     "high",
-            "medium":   "medium",
-            "low":      "low",
-            "none":     "none",
-            "log":      "none",
+            "critical": "critical", "high": "high",
+            "medium": "medium", "low": "low", "none": "none", "log": "none",
         }
         return mapping.get(self.severity.lower(), "low")
 
@@ -74,223 +70,292 @@ class CVEFinding:
         }
 
 
+class GmpConnection:
+    """
+    Connexion bas niveau au protocole GMP over TLS.
+    Chaque message GMP est un fragment XML suivi d'un octet nul.
+    """
+
+    SCAN_CONFIG_FULL_AND_FAST = "daba56c8-73ec-11df-a475-002264764cea"
+    SCANNER_OPENVAS_DEFAULT   = "08b69003-5fc2-4037-a479-93b440211c73"
+
+    def __init__(self, host: str, port: int = 9390, timeout: int = 30):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self._sock: Optional[ssl.SSLSocket] = None
+
+    def connect(self):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
+        self._sock = ctx.wrap_socket(raw, server_hostname=self.host)
+        logger.info(f"GMP connecté à {self.host}:{self.port}")
+
+    def disconnect(self):
+        if self._sock:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+
+    def send(self, xml_command: str) -> ET.Element:
+        """Envoie une commande GMP et retourne la réponse parsée."""
+        if not self._sock:
+            raise RuntimeError("GmpConnection non connectée")
+
+        self._sock.sendall((xml_command + "\0").encode("utf-8"))
+
+        # Lecture jusqu'à l'octet nul (fin de message GMP)
+        chunks: list[bytes] = []
+        while True:
+            chunk = self._sock.recv(65536)
+            if not chunk:
+                break
+            if b"\0" in chunk:
+                chunks.append(chunk.split(b"\0")[0])
+                break
+            chunks.append(chunk)
+
+        xml_data = b"".join(chunks).decode("utf-8", errors="replace")
+        return ET.fromstring(xml_data)
+
+    def authenticate(self, username: str, password: str):
+        resp = self.send(
+            f"<authenticate>"
+            f"<credentials>"
+            f"<username>{username}</username>"
+            f"<password>{password}</password>"
+            f"</credentials>"
+            f"</authenticate>"
+        )
+        status = resp.get("status", "")
+        if not status.startswith("2"):
+            raise RuntimeError(f"Authentification GVM échouée (status={status})")
+        logger.info("GVM authentifié")
+
+    def create_target(self, ip_list: list[str]) -> str:
+        hosts = ", ".join(ip_list)
+        name = f"SecureZone-{int(time.time())}"
+        resp = self.send(
+            f"<create_target>"
+            f"<name>{name}</name>"
+            f"<hosts>{hosts}</hosts>"
+            f"<alive_tests>Consider Alive</alive_tests>"
+            f"</create_target>"
+        )
+        target_id = resp.get("id", "")
+        if not target_id:
+            raise RuntimeError("Échec création target GVM")
+        logger.debug(f"Target GVM créée : {target_id}")
+        return target_id
+
+    def create_task(self, target_id: str) -> str:
+        name = f"SZ-scan-{int(time.time())}"
+        resp = self.send(
+            f"<create_task>"
+            f"<name>{name}</name>"
+            f"<config id=\"{self.SCAN_CONFIG_FULL_AND_FAST}\"/>"
+            f"<target id=\"{target_id}\"/>"
+            f"<scanner id=\"{self.SCANNER_OPENVAS_DEFAULT}\"/>"
+            f"</create_task>"
+        )
+        task_id = resp.get("id", "")
+        if not task_id:
+            raise RuntimeError("Échec création task GVM")
+        logger.debug(f"Task GVM créé : {task_id}")
+        return task_id
+
+    def start_task(self, task_id: str):
+        self.send(f"<start_task task_id=\"{task_id}\"/>")
+        logger.info(f"Scan GVM démarré (task={task_id})")
+
+    def poll_task(self, task_id: str) -> tuple[str, str, str]:
+        """Retourne (status, progress_pct, report_id)."""
+        resp = self.send(f"<get_tasks task_id=\"{task_id}\"/>")
+        task_el = resp.find(".//task")
+        if task_el is None:
+            return "Unknown", "0", ""
+        status = task_el.findtext("status", "Unknown")
+        progress = task_el.findtext("progress", "0")
+        last_report = task_el.find(".//last_report/report")
+        report_id = last_report.get("id", "") if last_report is not None else ""
+        return status, progress, report_id
+
+    def get_report(self, report_id: str) -> ET.Element:
+        return self.send(
+            f"<get_reports report_id=\"{report_id}\" "
+            f"filter=\"levels=hmlg\" ignore_pagination=\"1\" details=\"1\"/>"
+        )
+
+    def delete_task(self, task_id: str):
+        try:
+            self.send(f"<delete_task task_id=\"{task_id}\" ultimate=\"1\"/>")
+        except Exception:
+            pass
+
+    def delete_target(self, target_id: str):
+        try:
+            self.send(f"<delete_target target_id=\"{target_id}\" ultimate=\"1\"/>")
+        except Exception:
+            pass
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, *_):
+        self.disconnect()
+
+
 class OpenVASScanner:
     """
-    Client HTTP pour l'API GMP d'OpenVAS/Greenbone.
+    Scanner GVM/OpenVAS pour SecureZone.
 
-    En environnement de développement sans OpenVAS installé,
-    le scanner bascule automatiquement en mode simulation (_mock).
-
-    Usage :
-        scanner = OpenVASScanner(base_url="http://openvas:9390")
-        findings = await scanner.scan_hosts(["10.0.0.10", "10.0.0.20"])
-        for f in findings:
-            print(f.cve_id, f.cvss_score, f.affected_ip)
+    - Mode réel   : connexion TLS à gvmd (Kali, port 9390)
+    - Mode mock   : CVEs Metasploitable2 simulées si GVM inaccessible
     """
 
-    # Config de scan OpenVAS (Full and Fast)
-    SCAN_CONFIG_ID = "daba56c8-73ec-11df-a475-002264764cea"
-    # Scanner ID (OpenVAS Default)
-    SCANNER_ID = "08b69003-5fc2-4037-a479-93b440211c73"
-
-    def __init__(self, base_url: str = "http://localhost:9390"):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, host: str = "localhost", port: int = 9390,
+                 username: str = "admin", password: str = "admin"):
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
         self._available: Optional[bool] = None
 
     async def _check_available(self) -> bool:
-        """Teste si OpenVAS est accessible."""
         if self._available is not None:
             return self._available
+
+        # Test TCP rapide (5 s) avant d'essayer TLS
+        loop = asyncio.get_event_loop()
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                r = await client.get(f"{self.base_url}/gmp")
-                self._available = r.status_code < 500
+            await asyncio.wait_for(
+                loop.run_in_executor(None, self._test_tcp),
+                timeout=6,
+            )
+            self._available = True
+            logger.info(f"GVM/OpenVAS accessible sur {self.host}:{self.port}")
         except Exception:
             self._available = False
-            logger.warning("OpenVAS inaccessible — mode simulation activé")
+            logger.warning(
+                f"GVM inaccessible ({self.host}:{self.port}) — mode simulation activé"
+            )
         return self._available
 
-    async def scan_hosts(
-        self,
-        ip_list: list[str],
-        timeout_seconds: int = 1800,   # 30 min max
-    ) -> list[CVEFinding]:
-        """
-        Lance un scan OpenVAS sur une liste d'IPs.
+    def _test_tcp(self):
+        s = socket.create_connection((self.host, self.port), timeout=5)
+        s.close()
 
-        Le scan OpenVAS est lourd (plusieurs minutes). On crée un task,
-        on poll toutes les 30s jusqu'à completion, puis on récupère le rapport.
-        """
+    async def scan_hosts(self, ip_list: list[str], timeout_seconds: int = 1800) -> list[CVEFinding]:
+        """Lance un scan GVM ou retourne des CVEs simulées selon disponibilité."""
         if not await self._check_available():
-            logger.info("OpenVAS non disponible — retour de CVEs simulées")
+            logger.info("GVM non disponible — retour de CVEs simulées (Metasploitable2)")
             return self._mock_findings(ip_list)
 
         try:
-            target_id = await self._create_target(ip_list)
-            task_id = await self._create_task(target_id)
-            report_id = await self._start_and_wait(task_id, timeout_seconds)
-            findings = await self._get_report(report_id)
-
-            # Nettoyage
-            await self._delete_task(task_id)
-            await self._delete_target(target_id)
-
-            logger.info(f"Scan OpenVAS terminé — {len(findings)} vulnérabilités trouvées")
+            loop = asyncio.get_event_loop()
+            findings = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    self._run_gmp_scan_sync,
+                    ip_list,
+                    timeout_seconds,
+                ),
+                timeout=timeout_seconds + 30,
+            )
+            logger.info(f"Scan GVM terminé — {len(findings)} vulnérabilités")
             return findings
-
         except Exception as e:
-            logger.error(f"Erreur scan OpenVAS : {e}")
-            raise
+            logger.error(f"Erreur scan GVM : {e} — bascule en mode simulation")
+            return self._mock_findings(ip_list)
 
-    async def _gmp_request(self, xml_command: str) -> ET.Element:
-        """Envoie une commande GMP (XML) à l'API OpenVAS."""
-        async with httpx.AsyncClient(verify=False, timeout=30) as client:
-            response = await client.post(
-                f"{self.base_url}/gmp",
-                content=xml_command,
-                headers={"Content-Type": "application/xml"},
-            )
-            response.raise_for_status()
-            return ET.fromstring(response.text)
+    def _run_gmp_scan_sync(self, ip_list: list[str], timeout: int) -> list[CVEFinding]:
+        """Exécution synchrone complète du scan GMP (dans un thread executor)."""
+        with GmpConnection(self.host, self.port) as gmp:
+            gmp.authenticate(self.username, self.password)
 
-    async def _create_target(self, ip_list: list[str]) -> str:
-        """Crée une 'target' OpenVAS (liste d'hôtes à scanner)."""
-        hosts = ", ".join(ip_list)
-        xml = f"""
-        <create_target>
-          <name>SecureZone-scan-{asyncio.get_event_loop().time():.0f}</name>
-          <hosts>{hosts}</hosts>
-          <alive_tests>Consider Alive</alive_tests>
-        </create_target>
-        """
-        root = await self._gmp_request(xml)
-        target_id = root.get("id")
-        logger.debug(f"Target OpenVAS créée : {target_id}")
-        return target_id
+            target_id = gmp.create_target(ip_list)
+            task_id   = gmp.create_task(target_id)
+            gmp.start_task(task_id)
 
-    async def _create_task(self, target_id: str) -> str:
-        """Crée un task OpenVAS en liant la target et la config de scan."""
-        xml = f"""
-        <create_task>
-          <name>SecureZone-task</name>
-          <config id="{self.SCAN_CONFIG_ID}"/>
-          <target id="{target_id}"/>
-          <scanner id="{self.SCANNER_ID}"/>
-        </create_task>
-        """
-        root = await self._gmp_request(xml)
-        task_id = root.get("id")
-        logger.debug(f"Task OpenVAS créé : {task_id}")
-        return task_id
+            # Polling toutes les 30 s
+            elapsed = 0
+            report_id = ""
+            while elapsed < timeout:
+                time.sleep(30)
+                elapsed += 30
+                status, progress, report_id = gmp.poll_task(task_id)
+                logger.info(f"GVM scan : {progress}% — {status}")
+                if status == "Done":
+                    break
+                if status in ("Stopped", "Stop Requested", "Failed"):
+                    raise RuntimeError(f"Scan GVM échoué : status={status}")
 
-    async def _start_and_wait(self, task_id: str, timeout: int) -> str:
-        """Démarre le task et poll jusqu'à completion. Retourne le report_id."""
-        # Démarrer le task
-        await self._gmp_request(f'<start_task task_id="{task_id}"/>')
-        logger.info(f"Scan OpenVAS démarré (task={task_id})")
+            if not report_id:
+                raise TimeoutError(f"Scan GVM timeout après {timeout}s")
 
-        # Polling toutes les 30 secondes
-        elapsed = 0
-        poll_interval = 30
-        while elapsed < timeout:
-            await asyncio.sleep(poll_interval)
-            elapsed += poll_interval
+            report_xml = gmp.get_report(report_id)
+            findings   = self._parse_report(report_xml, ip_list)
 
-            status_xml = await self._gmp_request(
-                f'<get_tasks task_id="{task_id}"/>'
-            )
-            task_el = status_xml.find(".//task")
-            if task_el is None:
-                continue
+            gmp.delete_task(task_id)
+            gmp.delete_target(target_id)
 
-            status = task_el.findtext("status", "")
-            progress = task_el.findtext("progress", "0")
-            logger.info(f"OpenVAS progress: {progress}% — status: {status}")
+        return findings
 
-            if status == "Done":
-                # Récupérer l'ID du dernier rapport
-                last_report = task_el.find(".//last_report/report")
-                if last_report is not None:
-                    return last_report.get("id", "")
-                break
-
-            if status in ("Stopped", "Stop Requested", "Failed"):
-                raise RuntimeError(f"Scan OpenVAS échoué — status: {status}")
-
-        raise asyncio.TimeoutError(f"Scan OpenVAS timeout après {timeout}s")
-
-    async def _get_report(self, report_id: str) -> list[CVEFinding]:
-        """Récupère et parse le rapport de vulnérabilités."""
-        xml = f'<get_reports report_id="{report_id}" filter="levels=hmlg"/>'
-        root = await self._gmp_request(xml)
+    def _parse_report(self, root: ET.Element, ip_list: list[str]) -> list[CVEFinding]:
         findings = []
-
         for result in root.findall(".//result"):
-            # Ignorer les résultats sans sévérité réelle
-            severity_str = result.findtext("severity", "0.0")
             try:
-                cvss = float(severity_str)
+                cvss = float(result.findtext("severity", "0") or "0")
             except ValueError:
                 cvss = 0.0
-
             if cvss <= 0:
                 continue
 
-            # Extraction du CVE depuis les NVTs
+            # Extraction CVE et références depuis les NVTs
             nvt = result.find("nvt")
-            cve_id = ""
-            references = []
-            cpe = ""
+            cve_id, references, cpe = "", [], ""
             if nvt is not None:
                 for ref in nvt.findall("refs/ref"):
                     ref_type = ref.get("type", "")
-                    ref_id = ref.get("id", "")
-                    if ref_type == "cve":
+                    ref_id   = ref.get("id", "")
+                    if ref_type == "cve" and not cve_id:
                         cve_id = ref_id
-                    references.append(ref_id)
-                cpe = nvt.findtext("solution/cpe", "")
+                    if ref_id:
+                        references.append(ref_id)
+                cpe = nvt.findtext("cpe", "")
 
             host_el = result.find("host")
-            ip = host_el.text.strip() if host_el is not None else ""
+            ip = host_el.text.strip() if host_el is not None and host_el.text else (ip_list[0] if ip_list else "")
+
             port_str = result.findtext("port", "0/tcp")
-            port_num = 0
-            protocol = "tcp"
+            port_num, protocol = 0, "tcp"
             if "/" in port_str:
-                parts = port_str.split("/")
                 try:
-                    port_num = int(parts[0])
-                    protocol = parts[1]
+                    port_num  = int(port_str.split("/")[0])
+                    protocol  = port_str.split("/")[1]
                 except (ValueError, IndexError):
                     pass
 
             findings.append(CVEFinding(
-                name=result.findtext("name", "Unknown vulnerability"),
-                cve_id=cve_id,
-                cvss_score=cvss,
-                cvss_vector=result.findtext("threat", ""),
-                severity=self._cvss_to_severity(cvss),
-                description=result.findtext("description", ""),
-                solution=result.findtext("solution", ""),
-                affected_ip=ip,
-                affected_port=port_num,
-                affected_service=protocol,
-                references=references,
-                cpe=cpe,
+                name            = result.findtext("name", "Unknown vulnerability"),
+                cve_id          = cve_id,
+                cvss_score      = cvss,
+                cvss_vector     = result.findtext("nvt/cvss_base_vector", ""),
+                severity        = self._cvss_to_severity(cvss),
+                description     = result.findtext("description", ""),
+                solution        = result.findtext("solution", ""),
+                affected_ip     = ip,
+                affected_port   = port_num,
+                affected_service= protocol,
+                references      = references,
+                cpe             = cpe,
             ))
-
         return findings
-
-    async def _delete_task(self, task_id: str):
-        try:
-            await self._gmp_request(f'<delete_task task_id="{task_id}" ultimate="1"/>')
-        except Exception:
-            pass
-
-    async def _delete_target(self, target_id: str):
-        try:
-            await self._gmp_request(f'<delete_target target_id="{target_id}" ultimate="1"/>')
-        except Exception:
-            pass
 
     @staticmethod
     def _cvss_to_severity(score: float) -> str:
@@ -301,50 +366,85 @@ class OpenVASScanner:
         return "None"
 
     def _mock_findings(self, ip_list: list[str]) -> list[CVEFinding]:
-        """CVEs simulées pour le développement sans OpenVAS."""
-        mock_data = [
+        """
+        CVEs simulées basées sur Metasploitable2 — utilisées quand GVM est absent.
+        L'IP cible est celle saisie dans le scan (pas un 10.0.0.x codé en dur).
+        """
+        import re
+        ip_match = re.match(r"(\d+\.\d+\.\d+\.\d+)", (ip_list[0] if ip_list else "192.168.56.101"))
+        target_ip = ip_match.group(1) if ip_match else "192.168.56.101"
+
+        return [
             CVEFinding(
-                name="MS-RDP Remote Code Execution",
-                cve_id="CVE-2019-0708",
-                cvss_score=9.8,
-                cvss_vector="AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
-                severity="Critical",
-                description="BlueKeep — vulnérabilité critique RDP permettant l'exécution de code à distance sans authentification.",
-                solution="Appliquer le patch MS19-0708 de Microsoft. Désactiver RDP si non nécessaire.",
-                affected_ip=ip_list[0] if ip_list else "10.0.0.10",
-                affected_port=3389,
-                affected_service="ms-wbt-server",
-                references=["https://nvd.nist.gov/vuln/detail/CVE-2019-0708"],
+                name="vsftpd 2.3.4 Backdoor Command Execution",
+                cve_id="CVE-2011-2523", cvss_score=10.0,
+                cvss_vector="AV:N/AC:L/Au:N/C:C/I:C/A:C", severity="Critical",
+                description=(
+                    "vsftpd 2.3.4 contient une backdoor dans son code source. "
+                    "L'envoi d'un ':)' dans le champ username ouvre un shell root sur le port 6200."
+                ),
+                solution="Mettre à jour vsftpd. Désactiver FTP anonyme.",
+                affected_ip=target_ip, affected_port=21, affected_service="ftp",
+                references=["https://nvd.nist.gov/vuln/detail/CVE-2011-2523"],
             ),
             CVEFinding(
-                name="OpenSSH Authentication Bypass",
-                cve_id="CVE-2023-38408",
-                cvss_score=7.5,
-                cvss_vector="AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
-                severity="High",
-                description="Vulnérabilité dans ssh-agent permettant l'exécution de code arbitraire via un socket UNIX malveillant.",
-                solution="Mettre à jour OpenSSH vers la version 9.3p2 ou supérieure.",
-                affected_ip=ip_list[0] if ip_list else "10.0.0.1",
-                affected_port=22,
-                affected_service="ssh",
-                references=["https://nvd.nist.gov/vuln/detail/CVE-2023-38408"],
+                name="Samba MS-RPC Remote Code Execution (username map script)",
+                cve_id="CVE-2007-2447", cvss_score=9.3,
+                cvss_vector="AV:N/AC:M/Au:N/C:C/I:C/A:C", severity="Critical",
+                description=(
+                    "Samba 3.0.0–3.0.25rc3 : injection de commandes shell via le paramètre "
+                    "username dans la gestion MS-RPC SamrChangePassword."
+                ),
+                solution="Mettre à jour Samba vers 3.0.25+. Restreindre l'accès SMB.",
+                affected_ip=target_ip, affected_port=445, affected_service="smb",
+                references=["https://nvd.nist.gov/vuln/detail/CVE-2007-2447"],
             ),
             CVEFinding(
-                name="PostgreSQL Privilege Escalation",
-                cve_id="CVE-2023-2454",
-                cvss_score=6.5,
-                cvss_vector="AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:N",
-                severity="Medium",
-                description="Un utilisateur avec CREATE SCHEMA peut contourner les restrictions pg_catalog.",
-                solution="Mettre à jour PostgreSQL vers 15.3, 14.8, 13.11 ou 12.15.",
-                affected_ip=ip_list[-1] if ip_list else "10.0.0.20",
-                affected_port=5432,
-                affected_service="postgresql",
-                references=["https://nvd.nist.gov/vuln/detail/CVE-2023-2454"],
+                name="UnrealIRCd Backdoor Remote Code Execution",
+                cve_id="CVE-2010-2075", cvss_score=9.3,
+                cvss_vector="AV:N/AC:M/Au:N/C:C/I:C/A:C", severity="Critical",
+                description=(
+                    "UnrealIRCd 3.2.8.1 (2009-2010) contient une backdoor permettant "
+                    "l'exécution de commandes arbitraires via une connexion IRC."
+                ),
+                solution="Remplacer par une version officielle vérifiée.",
+                affected_ip=target_ip, affected_port=6667, affected_service="irc",
+                references=["https://nvd.nist.gov/vuln/detail/CVE-2010-2075"],
+            ),
+            CVEFinding(
+                name="Apache Tomcat AJP File Inclusion / RCE (Ghostcat)",
+                cve_id="CVE-2020-1938", cvss_score=9.8,
+                cvss_vector="AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", severity="Critical",
+                description=(
+                    "Le connecteur AJP d'Apache Tomcat permet la lecture de fichiers "
+                    "arbitraires et l'exécution de code sans authentification (Ghostcat)."
+                ),
+                solution="Désactiver le connecteur AJP ou mettre à jour Tomcat vers 9.0.31+.",
+                affected_ip=target_ip, affected_port=8009, affected_service="ajp13",
+                references=["https://nvd.nist.gov/vuln/detail/CVE-2020-1938"],
+            ),
+            CVEFinding(
+                name="OpenSSH Username Enumeration",
+                cve_id="CVE-2018-15473", cvss_score=5.3,
+                cvss_vector="AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N", severity="Medium",
+                description=(
+                    "OpenSSH ≤ 7.7 : énumération de noms d'utilisateurs par différences "
+                    "de temps de réponse lors de l'authentification."
+                ),
+                solution="Mettre à jour OpenSSH vers 7.8+.",
+                affected_ip=target_ip, affected_port=22, affected_service="ssh",
+                references=["https://nvd.nist.gov/vuln/detail/CVE-2018-15473"],
+            ),
+            CVEFinding(
+                name="MySQL Weak Authentication / Information Disclosure",
+                cve_id="CVE-2012-2122", cvss_score=5.1,
+                cvss_vector="AV:N/AC:H/Au:N/C:P/I:P/A:P", severity="Medium",
+                description=(
+                    "MySQL 5.1.x : dans certaines conditions, un attaquant peut s'authentifier "
+                    "avec un mot de passe incorrect en réessayant plusieurs fois (timing attack)."
+                ),
+                solution="Mettre à jour MySQL vers 5.1.63+ / 5.5.24+.",
+                affected_ip=target_ip, affected_port=3306, affected_service="mysql",
+                references=["https://nvd.nist.gov/vuln/detail/CVE-2012-2122"],
             ),
         ]
-        # Associer les IPs disponibles
-        for i, finding in enumerate(mock_data):
-            if i < len(ip_list):
-                finding.affected_ip = ip_list[i]
-        return mock_data

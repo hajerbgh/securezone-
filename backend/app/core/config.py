@@ -20,13 +20,22 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     NMAP_PATH: str = "/usr/bin/nmap"
-    OPENVAS_URL: str = "http://localhost:9390"
+    # OpenVAS / Greenbone GVM
+    GVM_HOST: str = "localhost"
+    GVM_PORT: int = 9390
+    GVM_USERNAME: str = "admin"
+    GVM_PASSWORD: str = "admin"
+    OPENVAS_URL: str = "http://localhost:9390"  # kept for backward compat
     SMTP_HOST: str = "localhost"
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = "securezone@company.local"
     SCAN_SCHEDULER_TIMEZONE: str = "Africa/Tunis"
+    # Clé API pour les systèmes d'ingestion automatique (Wazuh, Squid, email GW)
+    INGEST_API_KEY: str = "securezone-ingest-2024"
+    # Groq API (chatbot SIEM)
+    GROQ_API_KEY: str = ""
 
     @property
     def allowed_origins_list(self) -> List[str]:

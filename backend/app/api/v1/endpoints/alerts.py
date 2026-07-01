@@ -49,6 +49,21 @@ async def alert_stats(
         count = await db.scalar(select(func.count(Alert.id)).where(Alert.severity == sev))
         by_severity[sev] = count or 0
 
+    by_cat_result = await db.execute(
+        select(Alert.category, func.count(Alert.id).label("n"))
+        .group_by(Alert.category)
+        .order_by(func.count(Alert.id).desc())
+    )
+    by_category = {str(row[0].value if hasattr(row[0], "value") else row[0]): row[1]
+                   for row in by_cat_result}
+
+    by_status_result = await db.execute(
+        select(Alert.status, func.count(Alert.id).label("n"))
+        .group_by(Alert.status)
+    )
+    by_status = {str(row[0].value if hasattr(row[0], "value") else row[0]): row[1]
+                 for row in by_status_result}
+
     return AlertStats(
         total=total or 0,
         open=open_count or 0,
@@ -56,7 +71,8 @@ async def alert_stats(
         high=by_severity["high"],
         medium=by_severity["medium"],
         low=by_severity["low"],
-        by_category={},
+        by_category=by_category,
+        by_status=by_status,
     )
 
 

@@ -1,8 +1,25 @@
-import { Outlet } from "react-router-dom";
+import { Outlet, useNavigate, useSearchParams } from "react-router-dom";
 import { Search, Bell } from "lucide-react";
+import { useState, useEffect } from "react";
 import Sidebar from "./Sidebar";
 
 export default function Layout() {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const [query, setQuery] = useState(searchParams.get("q") || "");
+
+  // Sync input when URL changes (ex: navigating between pages)
+  useEffect(() => {
+    setQuery(searchParams.get("q") || "");
+  }, [searchParams]);
+
+  const handleSearch = (e) => {
+    const val = e.target.value;
+    setQuery(val);
+    // Navigate to vulnerabilities with ?q= param — debounce via onChange
+    navigate(val ? `/vulnerabilities?q=${encodeURIComponent(val)}` : "/vulnerabilities");
+  };
+
   return (
     <div className="min-h-screen bg-surface-page">
       <Sidebar />
@@ -15,6 +32,8 @@ export default function Layout() {
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-subtle" />
             <input
               type="search"
+              value={query}
+              onChange={handleSearch}
               placeholder="Rechercher une alerte, un asset, une CVE…"
               className="w-full rounded-lg border border-slate-200 bg-surface-page py-2 pl-9 pr-3 text-sm outline-none transition focus:border-brand-400 focus:bg-surface focus:ring-2 focus:ring-brand-100"
             />

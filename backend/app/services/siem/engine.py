@@ -14,11 +14,11 @@ Il peut aussi être déclenché manuellement via l'endpoint /siem/ingest.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, and_
 
 from app.models.alert import Alert, AlertStatus
 from app.models.asset import Asset
@@ -32,18 +32,6 @@ logger = logging.getLogger(__name__)
 
 
 class SIEMEngine:
-    """
-    Orchestrateur du Security Information and Event Management.
-
-    Usage depuis le lifespan FastAPI :
-        engine = SIEMEngine()
-        await engine.start_collection_loop(db_session_factory)
-
-    Usage depuis un endpoint (ingestion manuelle) :
-        engine = SIEMEngine()
-        result = await engine.ingest_batch(raw_logs, db)
-    """
-
     def __init__(self):
         self.collector = WazuhCollector(
             base_url=settings.WAZUH_MANAGER_URL,
@@ -60,25 +48,14 @@ class SIEMEngine:
     # ─────────────────────────────────────────────
 
     async def ingest_once(self, db: AsyncSession) -> dict:
-        """
-        Collecte + traite une fois toutes les nouvelles alertes Wazuh.
-        Point d'entrée pour l'endpoint /siem/ingest.
-        """
-        # 1. Collecter
         raw_alerts = await self.collector.fetch_once()
         if not raw_alerts:
             return {"status": "ok", "collected": 0, "saved": 0}
-
         return await self._process_alerts(raw_alerts, db)
 
     async def ingest_raw(self, raw_logs: list[dict], db: AsyncSession) -> dict:
-        """
-        Ingère des logs bruts depuis une source externe (firewall, EDR…).
-        Reçus via l'endpoint POST /siem/ingest.
-        """
         raw_alerts = []
         for log in raw_logs:
-            # Construire un RawAlert minimal depuis le JSON reçu
             from app.services.siem.wazuh_collector import RawAlert
             alert = RawAlert(
                 wazuh_id=log.get("id", f"ext-{datetime.now(timezone.utc).timestamp()}"),
@@ -94,7 +71,6 @@ class SIEMEngine:
                 data=log.get("data", {}),
             )
             raw_alerts.append(alert)
-
         return await self._process_alerts(raw_alerts, db)
 
     # ─────────────────────────────────────────────
@@ -102,9 +78,6 @@ class SIEMEngine:
     # ─────────────────────────────────────────────
 
     async def _process_alerts(self, raw_alerts: list[RawAlert], db: AsyncSession) -> dict:
-        """
-        Pipeline complet : normalize → ML → corrélation → persistance.
-        """
         stats = {
             "collected": len(raw_alerts),
             "normalized": 0,
@@ -117,53 +90,62 @@ class SIEMEngine:
         # 2. Normaliser
         events = self.normalizer.normalize_batch(raw_alerts)
         stats["normalized"] = len(events)
-
         if not events:
             return stats
 
-        # 3. Scorer les anomalies ML + alimenter le buffer d'entraînement
+        # 3. Scorer les anomalies ML
         anomaly_events = []
-        normal_events = []
         for event in events:
             self.anomaly_detector.add_to_buffer(event)
             result = self.anomaly_detector.score(event)
             if result.is_anomaly:
-                # Augmenter le risk_score et marquer comme anomalie
                 event.risk_score = result.adjusted_risk_score
                 event.description += f" [ML: {result.reason}]"
-                if event.category.value == "anomaly" or True:
-                    from app.models.alert import AlertCategory
-                    pass  # Garder la catégorie originale, juste booster le score
                 anomaly_events.append(event)
                 stats["anomalies_detected"] += 1
-            else:
-                normal_events.append(event)
 
-        # 4. Corrélation sur tous les événements
+        # 4. Corrélation
         correlated, uncorrelated = self.correlator.process_batch(events)
         stats["correlated_alerts"] = len(correlated)
         stats["simple_alerts"] = len(uncorrelated)
 
-        # 5. Persister en DB
+        # 5. Persister
         saved = 0
+        new_alerts: list[Alert] = []
 
-        # Alertes corrélées (patterns détectés)
         for ca in correlated:
             alert = await self._save_correlated_alert(ca, db)
             if alert:
                 saved += 1
+                new_alerts.append(alert)
 
-        # Alertes simples non corrélées (événements individuels significatifs)
         for event in uncorrelated:
             if event.severity.value in ("high", "critical") or event in anomaly_events:
                 alert = await self._save_simple_alert(event, db)
                 if alert:
                     saved += 1
+                    new_alerts.append(alert)
 
         await db.flush()
         stats["saved"] = saved
 
-        # 6. Ré-entraîner le modèle si nécessaire (toutes les 6h)
+        # 6. Auto-créer des incidents pour les alertes critiques/hautes (IR Engine)
+        if new_alerts:
+            from app.services.ir.engine import IREngine
+            from app.models.alert import AlertSeverity
+            ir_engine = IREngine(db)
+            for alert in new_alerts:
+                if alert.severity in (AlertSeverity.CRITICAL, AlertSeverity.HIGH):
+                    try:
+                        incident = await ir_engine.auto_create_from_alert(alert)
+                        if incident:
+                            await ir_engine.execute_auto_actions(incident, alert)
+                    except Exception as ir_err:
+                        logger.warning(f"IR auto-create échoué pour alerte #{alert.id}: {ir_err}")
+
+        await db.flush()
+
+        # 7. Ré-entraîner si nécessaire
         self.anomaly_detector.retrain_if_needed()
 
         logger.info(f"SIEM ingest : {stats}")
@@ -176,9 +158,21 @@ class SIEMEngine:
     async def _save_correlated_alert(
         self, ca: CorrelatedAlert, db: AsyncSession
     ) -> Optional[Alert]:
-        """Enregistre une alerte corrélée en DB."""
-        asset_id = await self._find_asset_id(ca.destination_ip, db)
+        """Enregistre une alerte corrélée — avec déduplication sur 5 minutes."""
+        recent_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+        existing = await db.execute(
+            select(Alert).where(
+                and_(
+                    Alert.source_ip == ca.source_ip,
+                    Alert.title == ca.title,
+                    Alert.created_at >= recent_cutoff,
+                )
+            ).limit(1)
+        )
+        if existing.scalars().first():
+            return None  # Doublon
 
+        asset_id = await self._find_asset_id(ca.destination_ip, db)
         alert = Alert(
             title=ca.title,
             description=ca.description,
@@ -204,12 +198,8 @@ class SIEMEngine:
     async def _save_simple_alert(
         self, event: NormalizedEvent, db: AsyncSession
     ) -> Optional[Alert]:
-        """Enregistre une alerte simple (événement non corrélé mais significatif)."""
-        # Éviter les doublons : même source + même règle dans la dernière minute
-        from sqlalchemy import and_
-        from datetime import timedelta
-
-        recent_cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
+        """Enregistre une alerte simple — avec déduplication sur 5 minutes."""
+        recent_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
         existing = await db.execute(
             select(Alert).where(
                 and_(
@@ -217,13 +207,12 @@ class SIEMEngine:
                     Alert.mitre_technique_id == event.mitre_technique_id,
                     Alert.created_at >= recent_cutoff,
                 )
-            )
+            ).limit(1)
         )
-        if existing.scalar_one_or_none():
+        if existing.scalars().first():
             return None  # Doublon
 
         asset_id = await self._find_asset_id(event.destination_ip, db)
-
         alert = Alert(
             title=event.title,
             description=event.description,
@@ -247,7 +236,6 @@ class SIEMEngine:
         return alert
 
     async def _find_asset_id(self, ip: Optional[str], db: AsyncSession) -> Optional[int]:
-        """Trouve l'asset correspondant à une IP (pour lier alerte ↔ asset)."""
         if not ip:
             return None
         result = await db.execute(
@@ -256,12 +244,7 @@ class SIEMEngine:
         row = result.first()
         return row[0] if row else None
 
-    # ─────────────────────────────────────────────
-    # Stats et état
-    # ─────────────────────────────────────────────
-
     def get_engine_status(self) -> dict:
-        """Retourne l'état de santé du SIEM Engine."""
         return {
             "running":     self._running,
             "correlator":  self.correlator.get_stats(),

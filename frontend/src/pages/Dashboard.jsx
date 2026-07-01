@@ -1,13 +1,89 @@
 import { useQuery } from "@tanstack/react-query";
+import { useState, useRef, useEffect } from "react";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Legend,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   BarChart, Bar,
 } from "recharts";
-import { FileDown, Plus } from "lucide-react";
+import { FileDown, Plus, ChevronDown, Loader2, FileText, Shield, CheckSquare } from "lucide-react";
 import api from "../lib/api";
 import { Card, KpiCard, Spinner } from "../components/ui";
 import { formatNumber, formatRelativeTime, CHART_PALETTE } from "../lib/format";
+
+const REPORT_TYPES = [
+  { key: "executive",  label: "Rapport Exécutif",  icon: Shield,      desc: "Management / CISO" },
+  { key: "technical",  label: "Rapport Technique",  icon: FileText,    desc: "SOC Engineers" },
+  { key: "compliance", label: "Rapport Conformité", icon: CheckSquare, desc: "ISO 27001 · DORA · CIS" },
+];
+
+function ReportDropdown() {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(null);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const download = async (type) => {
+    setOpen(false);
+    setLoading(type);
+    try {
+      const res = await api.get(`/reports/${type}`, { responseType: "blob" });
+      const url = URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `securezone-${type}-${new Date().toISOString().slice(0, 10)}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Erreur génération rapport", err);
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        className="btn btn-ghost flex items-center gap-1.5"
+        onClick={() => setOpen((o) => !o)}
+        disabled={!!loading}
+      >
+        {loading ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <FileDown className="h-4 w-4" />
+        )}
+        {loading ? "Génération…" : "Générer un rapport"}
+        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-xl border border-slate-200 bg-white shadow-lg">
+          <p className="px-3 pt-2.5 pb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            Type de rapport
+          </p>
+          {REPORT_TYPES.map(({ key, label, icon: Icon, desc }) => (
+            <button
+              key={key}
+              className="flex w-full items-start gap-3 px-3 py-2.5 text-left hover:bg-slate-50 last:mb-1"
+              onClick={() => download(key)}
+            >
+              <Icon className="mt-0.5 h-4 w-4 shrink-0 text-indigo-500" />
+              <div>
+                <p className="text-sm font-medium text-slate-800">{label}</p>
+                <p className="text-xs text-slate-400">{desc}</p>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Récupère plusieurs stats en parallèle pour le dashboard
 function useDashboardData() {
@@ -68,10 +144,7 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button className="btn btn-ghost">
-            <FileDown className="h-4 w-4" />
-            Générer un rapport
-          </button>
+          <ReportDropdown />
           <button className="btn btn-primary">
             <Plus className="h-4 w-4" />
             Créer un ticket

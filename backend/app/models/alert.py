@@ -32,6 +32,7 @@ class AlertCategory(str, enum.Enum):
     ANOMALY = "anomaly"           # Détection ML (Isolation Forest)
     COMPLIANCE = "compliance"
     VULNERABILITY = "vulnerability"
+    PHISHING = "phishing"
     OTHER = "other"
 
 

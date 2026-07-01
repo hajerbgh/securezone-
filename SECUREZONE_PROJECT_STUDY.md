@@ -3,6 +3,7 @@
 ## 1. Vue d'ensemble
 
 SecureZone est une plateforme de cybersécurité unifiée combinant :
+
 - un SIEM (Security Information and Event Management)
 - un moteur VM (Vulnerability Management) avec Nmap et OpenVAS
 - un moteur de conformité (Compliance)
@@ -24,6 +25,7 @@ L’objectif du projet est de détecter, corréler et prioriser les incidents de
 ### 2.2 Infrastructure Docker
 
 Le `docker-compose.yml` définit les services suivants :
+
 - `postgres` : base de données PostgreSQL 16
 - `redis` : cache et future file de tâches
 - `elasticsearch` : indexation et recherche full-text
@@ -62,6 +64,7 @@ Fichier : `backend/app/main.py`
 Fichier : `backend/app/api/v1/router.py`
 
 Sous-routeurs :
+
 - `/auth` : authentification JWT
 - `/assets` : inventaire des actifs
 - `/alerts` : gestion des alertes SIEM
@@ -81,6 +84,7 @@ Fichiers : `backend/app/api/v1/endpoints/auth.py`, `backend/app/core/security.py
 - `POST /api/v1/auth/users` : création d’utilisateur réservée admin
 
 Méthode :
+
 - stocke les mots de passe hachés via `bcrypt`
 - encode/décode JWT avec `python-jose`
 - expire les tokens d’accès après 60 min
@@ -99,6 +103,7 @@ Méthode :
 Fichier : `backend/app/services/siem/engine.py`
 
 Pipeline SIEM :
+
 1. Collecte des alertes Wazuh (`WazuhCollector`)
 2. Normalisation (`LogNormalizer`)
 3. Score d’anomalie ML (`AnomalyDetector`)
@@ -117,6 +122,7 @@ Fichier : `backend/app/services/siem/wazuh_collector.py`
 - Simule les alertes si Wazuh n’est pas disponible
 
 Use cases :
+
 - ingestion automatique depuis l’écosystème Wazuh
 - collecte manuelle via `/siem/collect`
 - ingestion d’un flux externe via `/siem/ingest`
@@ -128,6 +134,7 @@ Fichier : `backend/app/services/siem/normalizer.py`
 Objectif : transformer un `RawAlert` Wazuh en `NormalizedEvent` générique.
 
 Principales tâches :
+
 - filtrage des alertes peu utiles (`level < 3`)
 - mapping Wazuh `rule_id` et `rule_groups` vers `AlertCategory`
 - enrichissement MITRE ATT&CK (technique, tactique)
@@ -136,6 +143,7 @@ Principales tâches :
 - construction de tags de corrélation
 
 Cas d’usage :
+
 - aligner les alertes Wazuh sur des catégories SIEM cohérentes
 - préparer les données pour la corrélation et le scoring ML
 
@@ -146,6 +154,7 @@ Fichier : `backend/app/services/siem/anomaly_detector.py`
 Algorithme : `IsolationForest` de scikit-learn (non supervisé)
 
 Features vecteur :
+
 - heure du jour
 - jour de la semaine
 - sévérité
@@ -158,6 +167,7 @@ Features vecteur :
 Seuil d’anomalie : score < -0.1
 
 Comportements couverts :
+
 - activité hors heures bureau
 - IP source externe
 - port éphémère suspects
@@ -170,6 +180,7 @@ En production, cela permet de détecter des incidents inconnus ou des attaques c
 Fichier : `backend/app/services/siem/correlator.py`
 
 Règles implémentées :
+
 - CR-001 : Brute Force SSH/RDP
 - CR-002 : Scan de ports
 - CR-003 : Scan multi-cibles
@@ -178,6 +189,7 @@ Règles implémentées :
 - CR-006 : Mouvement latéral
 
 Mécanisme :
+
 - fenêtre glissante en RAM par clé de corrélation
 - `group_by_tags` : src, category, etc.
 - seuils temporels définis par règle
@@ -191,6 +203,7 @@ Valeur ajoutée : transformer plusieurs alertes faibles en un incident prioritai
 Fichier : `backend/app/models/alert.py`
 
 Table `alerts` stocke :
+
 - titre, description, sévérité, catégorie, statut
 - source et destination réseau
 - lien vers `asset`
@@ -208,6 +221,7 @@ Fichier : `backend/app/services/vm/engine.py`
 Objectif : scanner le parc réseau et évaluer les vulnérabilités.
 
 Pipeline VM :
+
 1. `ScanJob` créé en base
 2. Nmap découvre hôtes et ports ouverts
 3. OpenVAS analyse les services détectés
@@ -247,6 +261,7 @@ Fichier : `backend/app/services/vm/scheduler.py`
 - crée des jobs d’exécution ponctuels pour les scans programmés
 
 Use cases :
+
 - scan de nuit automatique
 - scans réguliers toutes les 6h ou hebdomadaires
 - comparaison des vulnérabilités dans le temps
@@ -256,11 +271,13 @@ Use cases :
 Fichier : `backend/app/models/vulnerability.py`
 
 Tables :
+
 - `assets` : inventaire réseau, statut, OS, tags, scores
 - `vulnerabilities` : CVE, CVSS, statut de remédiation
 - `scan_jobs` : historique des scans
 
 Scoring d’asset :
+
 - pondération CVSS par gravité
 - score plafonné à 10
 
@@ -269,6 +286,7 @@ Scoring d’asset :
 Fichiers : `backend/app/services/compliance/engine.py`, `backend/app/services/compliance/evaluator.py`, `backend/app/services/compliance/pdf_report.py`
 
 Fonctions :
+
 - évalue des politiques de durcissement sur les assets
 - calcule des `ComplianceCheck`
 - met à jour `compliance_score` par asset
@@ -276,6 +294,7 @@ Fonctions :
 - génère des PDF d’audit
 
 Politiques gérées :
+
 - port_closed, port_open
 - os_version
 - service_disabled
@@ -285,6 +304,7 @@ Politiques gérées :
 - field_value
 
 Cas d’usage :
+
 - vérifier la fermeture de RDP
 - vérifier le patch d’une CVE critique
 - s’assurer qu’un asset a un tag `production`
@@ -295,6 +315,7 @@ Cas d’usage :
 Fichier : `backend/app/models/asset.py`
 
 Chaque asset contient :
+
 - IP, hostname, MAC
 - type, statut, OS
 - département, owner, tags
@@ -511,6 +532,7 @@ Ce modèle fait le lien entre SIEM, VM et Compliance.
 Fichier : `backend/.env` ou variables Docker Compose
 
 Principales variables :
+
 - `DATABASE_URL`
 - `REDIS_URL`
 - `ELASTICSEARCH_URL`
@@ -626,6 +648,7 @@ Principales variables :
 SecureZone est un projet de cybersécurité complet à mi-chemin entre un SOC et un outil de gestion de vulnérabilités/conformité. Il combine plusieurs couches : collecte Wazuh, normalisation, détection machine-learning, corrélation d’attaques, scans de vulnérabilités et contrôles de conformité.
 
 Pour ton encadrant, l’axe principal à souligner est la valeur ajoutée :
+
 - visibilité centralisée des incidents
 - priorisation automatique
 - détection à la fois par règles et par comportement

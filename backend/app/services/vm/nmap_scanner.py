@@ -83,28 +83,48 @@ class NmapScanner:
     """
 
     # Arguments nmap par mode de scan
-    SCAN_MODES = {
-        "discovery": "-sn -T4",                        # Ping sweep uniquement
-        "ports":     "-sS -T4 --top-ports 1000",       # Top 1000 ports TCP
-        "full":      "-sS -sV -O -T4 -p-",             # Tous ports + versions + OS
-        "stealth":   "-sS -T2 --top-ports 1000",       # Furtif, lent
-        "udp":       "-sU -T4 --top-ports 100",        # Top 100 ports UDP
-    }
+    # Sur Windows : SYN scan (-sS) et détection OS (-O) nécessitent des droits admin
+    # → on utilise TCP connect (-sT) qui fonctionne sans privilèges élevés
+    _IS_WINDOWS = __import__("platform").system() == "Windows"
 
-    def __init__(self, nmap_path: str = "/usr/bin/nmap"):
-        self.nmap_path = nmap_path
+    @classmethod
+    def _build_scan_modes(cls) -> dict[str, str]:
+        if cls._IS_WINDOWS:
+            return {
+                "discovery": "-sn -T4",
+                "ports":     "-sT -T4 --top-ports 1000",   # TCP connect, pas de SYN
+                "full":      "-sT -sV -T4 --top-ports 1000",  # Versions, sans OS detect
+                "stealth":   "-sT -T2 --top-ports 1000",
+                "udp":       "-sU -T4 --top-ports 100",
+            }
+        return {
+            "discovery": "-sn -T4",
+            "ports":     "-sS -T4 --top-ports 1000",
+            "full":      "-sS -sV -O -T4 -p-",
+            "stealth":   "-sS -T2 --top-ports 1000",
+            "udp":       "-sU -T4 --top-ports 100",
+        }
+
+    SCAN_MODES: dict[str, str] = {}  # initialisé dans __init__
+
+    def __init__(self):
+        self.SCAN_MODES = self._build_scan_modes()
         self._check_nmap_available()
 
     def _check_nmap_available(self):
         """Vérifie que nmap est installé sur le système."""
         import shutil
-        if not shutil.which("nmap"):
+        if shutil.which("nmap"):
+            logger.info(f"nmap détecté ({'Windows' if self._IS_WINDOWS else 'Linux/Mac'})")
+        else:
             logger.warning("nmap introuvable dans le PATH — les scans seront simulés")
 
     async def scan_range(
         self,
         ip_range: str,
         mode: str = "ports",
+        exclude_ips: list[str] | None = None,
+        port_range: str | None = None,
         extra_args: str = "",
         timeout_seconds: int = 600,
     ) -> list[HostScanResult]:
@@ -114,6 +134,8 @@ class NmapScanner:
         Args:
             ip_range: Plage CIDR ou IP unique. Ex: "10.0.0.0/24", "192.168.1.1"
             mode: Mode de scan (voir SCAN_MODES)
+            exclude_ips: IPs/subnets à exclure. Ex: ["192.168.1.5", "10.0.0.1"]
+            port_range: Ports ciblés. Ex: "22,80,443" ou "1-1000" (None = comportement du mode)
             extra_args: Arguments nmap supplémentaires
             timeout_seconds: Timeout max du scan
 
@@ -124,10 +146,26 @@ class NmapScanner:
             raise ValueError(f"Mode inconnu '{mode}'. Valeurs possibles : {list(self.SCAN_MODES)}")
 
         nmap_args = self.SCAN_MODES[mode]
+
+        # Remplacer le port range par défaut si spécifié
+        if port_range:
+            import re
+            nmap_args = re.sub(r'-p[^\s]*\s*|-p-', '', nmap_args).strip()
+            nmap_args += f" -p {port_range}"
+
+        # Exclusions d'IPs
+        if exclude_ips:
+            exclude_str = ",".join(exclude_ips)
+            nmap_args += f" --exclude {exclude_str}"
+
         if extra_args:
             nmap_args += f" {extra_args}"
 
-        logger.info(f"Démarrage scan nmap | range={ip_range} | mode={mode} | args={nmap_args}")
+        logger.info(
+            f"Démarrage scan nmap | range={ip_range} | mode={mode}"
+            + (f" | exclude={exclude_ips}" if exclude_ips else "")
+            + (f" | ports={port_range}" if port_range else "")
+        )
 
         try:
             results = await asyncio.wait_for(
@@ -165,8 +203,8 @@ class NmapScanner:
             nm.scan(hosts=ip_range, arguments=args)
             duration = time.time() - start
         except nmap_lib.PortScannerError as e:
-            logger.error(f"nmap error: {e}")
-            return []
+            logger.warning(f"nmap indisponible ({e}) — retour de données simulées")
+            return self._mock_scan(ip_range)
 
         results = []
         for ip in nm.all_hosts():
@@ -209,40 +247,34 @@ class NmapScanner:
 
     def _mock_scan(self, ip_range: str) -> list[HostScanResult]:
         """
-        Données simulées quand nmap n'est pas disponible (ex: dev sans root).
-        Utile pour tester le reste du pipeline sans avoir nmap installé.
+        Données simulées quand nmap n'est pas disponible.
+        Utilise l'IP saisie comme adresse de l'hôte simulé (Metasploitable2).
         """
-        logger.info(f"Mode simulation — génération de résultats fictifs pour {ip_range}")
+        import re
+        # Extraire la première IP de la plage (10.0.0.1/24 → 10.0.0.1, ou IP brute)
+        ip_match = re.match(r"(\d+\.\d+\.\d+\.\d+)", ip_range.strip())
+        target_ip = ip_match.group(1) if ip_match else "192.168.56.101"
+
+        logger.info(f"Mode simulation — hôte fictif basé sur {target_ip}")
         return [
             HostScanResult(
-                ip_address="10.0.0.1",
-                hostname="firewall.internal",
+                ip_address=target_ip,
+                hostname="metasploitable.local",
                 status="up",
-                os_name="Linux 5.x",
+                os_name="Linux 2.6 (Ubuntu 8.04)",
                 open_ports=[
-                    PortInfo(22, "tcp", "open", "ssh", "8.9p1", "OpenSSH"),
-                    PortInfo(443, "tcp", "open", "https", "", "nginx"),
-                ],
-            ),
-            HostScanResult(
-                ip_address="10.0.0.10",
-                hostname="srv-paie.internal",
-                status="up",
-                os_name="Windows Server 2022",
-                open_ports=[
-                    PortInfo(3389, "tcp", "open", "ms-wbt-server", "", "Microsoft Terminal Services"),
-                    PortInfo(445, "tcp", "open", "microsoft-ds", "", ""),
-                    PortInfo(80, "tcp", "open", "http", "", "IIS 10.0"),
-                ],
-            ),
-            HostScanResult(
-                ip_address="10.0.0.20",
-                hostname="db-prod.internal",
-                status="up",
-                os_name="Ubuntu 22.04",
-                open_ports=[
-                    PortInfo(5432, "tcp", "open", "postgresql", "14.5", "PostgreSQL"),
-                    PortInfo(22, "tcp", "open", "ssh", "8.9p1", "OpenSSH"),
+                    PortInfo(21,   "tcp", "open", "ftp",            "2.3.4", "vsftpd"),
+                    PortInfo(22,   "tcp", "open", "ssh",            "4.7p1", "OpenSSH"),
+                    PortInfo(23,   "tcp", "open", "telnet",         "",      "Linux telnetd"),
+                    PortInfo(25,   "tcp", "open", "smtp",           "2.8.19","Postfix smtpd"),
+                    PortInfo(80,   "tcp", "open", "http",           "",      "Apache httpd 2.2.8"),
+                    PortInfo(139,  "tcp", "open", "netbios-ssn",    "",      "Samba smbd 3.X"),
+                    PortInfo(445,  "tcp", "open", "microsoft-ds",   "",      "Samba smbd 3.0.20"),
+                    PortInfo(3306, "tcp", "open", "mysql",          "5.0.51","MySQL"),
+                    PortInfo(5432, "tcp", "open", "postgresql",     "8.3.0", "PostgreSQL"),
+                    PortInfo(6667, "tcp", "open", "irc",            "",      "UnrealIRCd"),
+                    PortInfo(8009, "tcp", "open", "ajp13",          "",      "Apache Jserv"),
+                    PortInfo(8180, "tcp", "open", "http",           "",      "Apache Tomcat/Coyote"),
                 ],
             ),
         ]

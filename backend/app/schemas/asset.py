@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
-from app.models.asset import AssetType, AssetStatus
+from app.models.asset import AssetType, AssetStatus, AssetCriticality
 
 
 class AssetBase(BaseModel):
@@ -9,6 +9,7 @@ class AssetBase(BaseModel):
     ip_address: str
     mac_address: Optional[str] = None
     asset_type: AssetType = AssetType.UNKNOWN
+    criticality: AssetCriticality = AssetCriticality.MEDIUM
     department: Optional[str] = None
     location: Optional[str] = None
     owner: Optional[str] = None
@@ -24,6 +25,7 @@ class AssetCreate(AssetBase):
 class AssetUpdate(BaseModel):
     hostname: Optional[str] = None
     asset_type: Optional[AssetType] = None
+    criticality: Optional[AssetCriticality] = None
     department: Optional[str] = None
     location: Optional[str] = None
     owner: Optional[str] = None
@@ -35,6 +37,7 @@ class AssetUpdate(BaseModel):
 class AssetRead(AssetBase):
     id: int
     status: AssetStatus
+    criticality: AssetCriticality
     os_name: Optional[str]
     os_version: Optional[str]
     compliance_score: float
@@ -54,6 +57,7 @@ class AssetSummary(BaseModel):
     hostname: Optional[str]
     ip_address: str
     asset_type: AssetType
+    criticality: AssetCriticality
     status: AssetStatus
     compliance_score: float
     risk_score: float

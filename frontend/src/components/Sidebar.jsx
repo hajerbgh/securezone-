@@ -2,7 +2,7 @@ import { NavLink } from "react-router-dom";
 import clsx from "clsx";
 import {
   LayoutDashboard, ShieldAlert, ScanSearch, FileCheck2,
-  Siren, LogOut, ShieldCheck,
+  Siren, LogOut, ShieldCheck, Fish,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
@@ -10,6 +10,7 @@ const NAV = [
   { to: "/", label: "Tableau de bord", icon: LayoutDashboard, end: true },
   { to: "/alerts", label: "Alertes (SIEM)", icon: ShieldAlert },
   { to: "/vulnerabilities", label: "Vulnérabilités", icon: ScanSearch },
+  { to: "/phishing", label: "Phishing", icon: Fish },
   { to: "/compliance", label: "Conformité", icon: FileCheck2 },
   { to: "/incidents", label: "Incidents", icon: Siren },
 ];

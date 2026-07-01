@@ -50,14 +50,26 @@ class PolicyEvaluator:
         result = evaluator.evaluate(asset, policy)
     """
 
-    def evaluate(self, asset: Asset, rule_type: str, rule_config: dict, open_cves: list = None) -> EvalResult:
+    # Rule types that need alert statistics (loaded by engine, not from asset fields)
+    _ALERT_RULES = {"no_active_alerts", "no_brute_force", "no_phishing_detection"}
+
+    def evaluate(
+        self,
+        asset: Asset,
+        rule_type: str,
+        rule_config: dict,
+        open_cves: list = None,
+        alert_stats: dict = None,
+    ) -> EvalResult:
         """
         Dispatch vers la bonne méthode selon le type de règle.
 
         Args:
-            asset       : l'asset à évaluer
-            rule_type   : type de règle (voir module docstring)
-            rule_config : paramètres de la règle (JSON stocké en DB)
+            asset        : l'asset à évaluer
+            rule_type    : type de règle (voir module docstring)
+            rule_config  : paramètres de la règle (JSON stocké en DB)
+            open_cves    : liste de CVE IDs ouverts sur l'asset (pour patch_applied)
+            alert_stats  : stats d'alertes pour l'IP de l'asset (pour no_brute_force, etc.)
 
         Returns:
             EvalResult avec le verdict et les détails
@@ -75,6 +87,8 @@ class PolicyEvaluator:
         try:
             if rule_type == "patch_applied":
                 return handler(asset, rule_config, open_cves)
+            if rule_type in self._ALERT_RULES:
+                return handler(asset, rule_config, alert_stats or {})
             return handler(asset, rule_config)
         except Exception as e:
             logger.error(f"Erreur évaluation {rule_type} sur {asset.ip_address}: {e}")
@@ -392,4 +406,99 @@ class PolicyEvaluator:
             actual_value={field: actual},
             expected_value={field: expected},
             detail=f"Champ '{field}' conforme.",
+        )
+
+    # ─────────────────────────────────────────────
+    # Règles basées sur les alertes SIEM
+    # (données injectées par ComplianceEngine._load_alert_stats)
+    # ─────────────────────────────────────────────
+
+    def _eval_no_active_alerts(self, asset: Asset, config: dict, alert_stats: dict) -> EvalResult:
+        """
+        Vérifie qu'aucune alerte active n'est ouverte sur cet asset.
+
+        Exemple config : {"max_alerts": 0, "categories": ["brute_force", "port_scan"]}
+        Cas d'usage ISO 27001 A.16.1.4 : les incidents détectés doivent être traités.
+        """
+        max_allowed = config.get("max_alerts", 0)
+        filter_cats = config.get("categories", [])
+
+        if filter_cats:
+            total = sum(alert_stats.get(cat, 0) for cat in filter_cats)
+        else:
+            total = alert_stats.get("total", 0)
+
+        if total > max_allowed:
+            return EvalResult(
+                status=ComplianceStatus.NON_COMPLIANT,
+                actual_value={"open_alerts": total},
+                expected_value={"max_alerts": max_allowed},
+                detail=(
+                    f"{total} alerte(s) ouverte(s) sur cet asset. "
+                    f"ISO 27001 A.16.1.4 : les événements de sécurité doivent être évalués et clôturés."
+                ),
+            )
+
+        return EvalResult(
+            status=ComplianceStatus.COMPLIANT,
+            actual_value={"open_alerts": total},
+            expected_value={"max_alerts": max_allowed},
+            detail="Aucune alerte ouverte — posture d'incident conforme.",
+        )
+
+    def _eval_no_brute_force(self, asset: Asset, config: dict, alert_stats: dict) -> EvalResult:
+        """
+        Vérifie qu'aucune tentative de brute force active ne vise cet asset.
+
+        Exemple config : {"max_attempts": 0}
+        Cas d'usage DORA Art.9 / CIS Control 4.1 : accès non autorisés détectés et bloqués.
+        """
+        max_allowed = config.get("max_attempts", 0)
+        bf_count = alert_stats.get("brute_force", 0)
+
+        if bf_count > max_allowed:
+            return EvalResult(
+                status=ComplianceStatus.NON_COMPLIANT,
+                actual_value={"brute_force_alerts": bf_count},
+                expected_value={"max_attempts": max_allowed},
+                detail=(
+                    f"{bf_count} alerte(s) de brute force active(s) détectée(s) sur cet asset. "
+                    f"DORA Art.9 : les tentatives d'accès non autorisés doivent être bloquées et tracées."
+                ),
+            )
+
+        return EvalResult(
+            status=ComplianceStatus.COMPLIANT,
+            actual_value={"brute_force_alerts": bf_count},
+            expected_value={"max_attempts": max_allowed},
+            detail="Aucune tentative de brute force active — conforme.",
+        )
+
+    def _eval_no_phishing_detection(self, asset: Asset, config: dict, alert_stats: dict) -> EvalResult:
+        """
+        Vérifie qu'aucune navigation vers un site de phishing n'a été détectée
+        depuis cet asset (via le proxy Squid).
+
+        Exemple config : {"max_detections": 0}
+        Cas d'usage ISO 27001 A.7.2.2 : sensibilisation et formation à la sécurité.
+        """
+        max_allowed = config.get("max_detections", 0)
+        ph_count = alert_stats.get("phishing", 0)
+
+        if ph_count > max_allowed:
+            return EvalResult(
+                status=ComplianceStatus.NON_COMPLIANT,
+                actual_value={"phishing_detections": ph_count},
+                expected_value={"max_detections": max_allowed},
+                detail=(
+                    f"{ph_count} détection(s) de navigation phishing depuis cet asset. "
+                    f"ISO 27001 A.7.2.2 : indicateur de sensibilisation insuffisante aux cybermenaces."
+                ),
+            )
+
+        return EvalResult(
+            status=ComplianceStatus.COMPLIANT,
+            actual_value={"phishing_detections": ph_count},
+            expected_value={"max_detections": max_allowed},
+            detail="Aucune navigation phishing détectée depuis cet asset — conforme.",
         )

@@ -1,10 +1,44 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
-import { FileCheck2, FileDown } from "lucide-react";
+import { FileCheck2, FileDown, Loader2, RefreshCw } from "lucide-react";
 import api from "../lib/api";
 import { Card, SeverityBadge, Spinner, EmptyState } from "../components/ui";
 
+async function downloadComplianceReport(setLoading) {
+  setLoading(true);
+  try {
+    const res = await api.get("/reports/compliance", { responseType: "blob" });
+    const url = URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `securezone-conformite-${new Date().toISOString().slice(0, 10)}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error("Erreur génération rapport conformité", err);
+  } finally {
+    setLoading(false);
+  }
+}
+
 export default function Compliance() {
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [evaluating, setEvaluating] = useState(false);
+  const queryClient = useQueryClient();
+
+  async function runEvaluation() {
+    setEvaluating(true);
+    try {
+      await api.post("/compliance/evaluate");
+      await queryClient.invalidateQueries({ queryKey: ["compliance-dashboard"] });
+    } catch (err) {
+      console.error("Erreur évaluation conformité", err);
+    } finally {
+      setEvaluating(false);
+    }
+  }
+
   const { data: dashboard, isLoading } = useQuery({
     queryKey: ["compliance-dashboard"],
     queryFn: async () => (await api.get("/compliance/dashboard")).data,
@@ -42,10 +76,33 @@ export default function Compliance() {
             Évaluation continue ISO 27001, DORA et CIS Controls
           </p>
         </div>
-        <button className="btn btn-primary">
-          <FileDown className="h-4 w-4" />
-          Générer le rapport PDF
-        </button>
+        <div className="flex gap-2">
+          <button
+            className="btn btn-ghost"
+            onClick={runEvaluation}
+            disabled={evaluating}
+            title="Lance une évaluation de conformité sur tous les assets"
+          >
+            {evaluating ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            {evaluating ? "Évaluation…" : "Évaluer maintenant"}
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={() => downloadComplianceReport(setPdfLoading)}
+            disabled={pdfLoading}
+          >
+            {pdfLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <FileDown className="h-4 w-4" />
+            )}
+            {pdfLoading ? "Génération…" : "Générer le rapport PDF"}
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">

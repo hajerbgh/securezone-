@@ -23,6 +23,19 @@ class AssetStatus(str, enum.Enum):
     UNKNOWN = "unknown"
 
 
+class AssetCriticality(str, enum.Enum):
+    """
+    Niveau de criticité métier de l'asset.
+    Utilisé pour pondérer le risk_score :
+      critical × 2.0 | high × 1.5 | medium × 1.0 | low × 0.5
+    Ex : serveur de paie → CRITICAL ; imprimante → LOW
+    """
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
 class Asset(Base, TimestampMixin):
     __tablename__ = "assets"
 
@@ -34,6 +47,8 @@ class Asset(Base, TimestampMixin):
     # Classification
     asset_type = Column(Enum(AssetType), default=AssetType.UNKNOWN, nullable=False)
     status = Column(Enum(AssetStatus), default=AssetStatus.UNKNOWN, nullable=False)
+    # String plutôt qu'Enum natif PostgreSQL pour éviter les problèmes de casse
+    criticality = Column(String(20), default="medium", nullable=False, index=True)
     os_name = Column(String(255), nullable=True)
     os_version = Column(String(100), nullable=True)
 
@@ -60,4 +75,4 @@ class Asset(Base, TimestampMixin):
     software_inventory = Column(JSON, default=list)
 
     def __repr__(self):
-        return f"<Asset {self.ip_address} ({self.hostname or 'unknown'})>"
+        return f"<Asset {self.ip_address} ({self.hostname or 'unknown'}) [{self.criticality}]>"

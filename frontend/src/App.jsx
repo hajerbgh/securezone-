@@ -3,12 +3,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import Layout from "./components/Layout";
+import ChatBot from "./components/ChatBot";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Alerts from "./pages/Alerts";
 import Vulnerabilities from "./pages/Vulnerabilities";
 import Compliance from "./pages/Compliance";
 import Incidents from "./pages/Incidents";
+import Phishing from "./pages/Phishing";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,7 +31,10 @@ export default function App() {
             <Route
               element={
                 <ProtectedRoute>
-                  <Layout />
+                  <>
+                    <Layout />
+                    <ChatBot />
+                  </>
                 </ProtectedRoute>
               }
             >
@@ -37,6 +42,7 @@ export default function App() {
               <Route path="/alerts" element={<Alerts />} />
               <Route path="/vulnerabilities" element={<Vulnerabilities />} />
               <Route path="/compliance" element={<Compliance />} />
+              <Route path="/phishing" element={<Phishing />} />
               <Route path="/incidents" element={<Incidents />} />
             </Route>
           </Routes>

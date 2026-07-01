@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-Command nmap -ErrorAction SilentlyContinue)",
+      "PowerShell(nmap --version 2>&1)"
+    ]
+  }
+}

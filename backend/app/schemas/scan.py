@@ -13,15 +13,24 @@ class VulnerabilityRead(BaseModel):
     description: Optional[str]
     solution: Optional[str]
     cvss_score: Optional[float]
+    cvss_vector: Optional[str]
     severity: VulnSeverity
     status: VulnStatus
     asset_id: int
+    asset_ip: Optional[str] = None        # Injecté depuis la relation Asset
+    asset_hostname: Optional[str] = None  # Injecté depuis la relation Asset
     affected_port: Optional[int]
     affected_service: Optional[str]
     scanner_name: Optional[str]
     references: List[str]
+    cpe: Optional[str]
     remediation_note: Optional[str]
+    assigned_to_id: Optional[int]
     deadline: Optional[datetime]
+    remediated_at: Optional[datetime]
+    scan_id: Optional[int]
+    first_seen: Optional[datetime]
+    last_seen: Optional[datetime]
     created_at: datetime
 
     class Config:
@@ -42,8 +51,31 @@ class VulnerabilityStats(BaseModel):
     high: int
     medium: int
     low: int
-    by_asset: Dict[str, int]       # ip_address → count
-    top_cvss: List[Dict[str, Any]] # [{cve_id, cvss_score, asset_ip}]
+    # Top 10 assets avec le plus de vulnérabilités ouvertes
+    by_asset: List[Dict[str, Any]]
+    # Top 5 CVE par score CVSS
+    top_cvss: List[Dict[str, Any]]
+
+
+# ── Import externe (OpenVAS, Nessus, etc.) ───────────────────
+
+class VulnerabilityImport(BaseModel):
+    affected_ip: str
+    cve_id: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    solution: Optional[str] = None
+    cvss_score: float = 0.0
+    severity: VulnSeverity = VulnSeverity.LOW
+    affected_port: int = 0
+    affected_service: Optional[str] = None
+    references: List[str] = []
+
+
+class VulnerabilityImportResult(BaseModel):
+    imported: int
+    skipped: int
+    total_received: int
 
 
 # ── ScanJobs ─────────────────────────────────────────────────
@@ -51,16 +83,17 @@ class VulnerabilityStats(BaseModel):
 class ScanJobCreate(BaseModel):
     name: Optional[str] = None
     ip_ranges: List[str]
-    scanner_type: str = "full"     # "nmap" | "openvas" | "full"
+    exclude_ips: List[str] = []
+    port_range: Optional[str] = None   # "22,80,443" ou "1-1000" (None = tous les ports)
+    scanner_type: str = "full"
     is_scheduled: bool = False
-    cron_expression: Optional[str] = None  # "0 2 * * *"
+    cron_expression: Optional[str] = None
 
     @validator("cron_expression")
     def validate_cron(cls, v, values):
         if values.get("is_scheduled") and not v:
             raise ValueError("cron_expression requis quand is_scheduled=True")
         if v:
-            # Validation basique : 5 champs cron
             parts = v.strip().split()
             if len(parts) != 5:
                 raise ValueError("Expression cron invalide (format: 'min heure jour mois jour_semaine')")
@@ -78,11 +111,23 @@ class ScanJobCreate(BaseModel):
             raise ValueError("Au moins une plage IP requise")
         return v
 
+    @validator("port_range")
+    def validate_port_range(cls, v):
+        if v is None:
+            return v
+        # Accepter "22,80,443" ou "1-1000" ou "1-65535"
+        import re
+        if not re.match(r'^[\d,\-]+$', v):
+            raise ValueError("port_range invalide — format attendu : '22,80,443' ou '1-1000'")
+        return v
+
 
 class ScanJobRead(BaseModel):
     id: int
     name: Optional[str]
     ip_ranges: List[str]
+    exclude_ips: List[str]
+    port_range: Optional[str]
     scanner_type: str
     is_scheduled: bool
     cron_expression: Optional[str]

@@ -102,11 +102,15 @@ class ComplianceEngine:
         # Pré-charger les CVEs ouvertes par asset (évite N+1 queries)
         cves_by_asset = await self._load_open_cves_by_asset()
 
+        # Pré-charger les stats d'alertes SIEM par IP (pour règles alert-based)
+        alert_stats_by_ip = await self._load_alert_stats()
+
         # Évaluer chaque combinaison asset × policy
         total_checks = 0
         for asset in assets:
             open_cves = cves_by_asset.get(asset.id, [])
-            checks_count = await self._evaluate_asset(asset, policies, open_cves)
+            alert_data = alert_stats_by_ip.get(asset.ip_address, {"brute_force": 0, "phishing": 0, "total": 0})
+            checks_count = await self._evaluate_asset(asset, policies, open_cves, alert_data)
             total_checks += checks_count
 
         await self.db.flush()
@@ -133,8 +137,9 @@ class ComplianceEngine:
 
         policies = await self._load_policies()
         open_cves = (await self._load_open_cves_by_asset()).get(asset_id, [])
+        alert_data = (await self._load_alert_stats()).get(asset.ip_address, {"brute_force": 0, "phishing": 0, "total": 0})
 
-        checks_count = await self._evaluate_asset(asset, policies, open_cves)
+        checks_count = await self._evaluate_asset(asset, policies, open_cves, alert_data)
         await self.db.flush()
 
         score = await self._recalculate_asset_score(asset)
@@ -153,6 +158,7 @@ class ComplianceEngine:
         asset: Asset,
         policies: list[HardeningPolicy],
         open_cves: list[str],
+        alert_stats: dict = None,
     ) -> int:
         """Évalue toutes les policies applicables sur un asset."""
         count = 0
@@ -167,8 +173,8 @@ class ComplianceEngine:
                 asset=asset,
                 rule_type=policy.rule_type,
                 rule_config=policy.rule_config,
-                # patch_applied a besoin des CVEs
-                **({"open_cves": open_cves} if policy.rule_type == "patch_applied" else {}),
+                open_cves=open_cves,
+                alert_stats=alert_stats or {},
             )
 
             # Upsert du ComplianceCheck en DB
@@ -332,6 +338,46 @@ class ComplianceEngine:
             query = query.where(Asset.department == department)
         result = await self.db.execute(query)
         return result.scalars().all()
+
+    async def _load_alert_stats(self) -> dict[str, dict]:
+        """
+        Charge les stats d'alertes SIEM ouvertes, indexées par IP.
+
+        Pour les attaques (brute force, port scan…) : destination_ip = l'asset victime.
+        Pour le phishing : source_ip = l'asset qui a navigué vers l'URL de phishing.
+
+        Retourne : {ip: {"brute_force": N, "phishing": N, "total": N}}
+        """
+        from app.models.alert import Alert, AlertCategory, AlertStatus
+
+        result = await self.db.execute(
+            select(Alert.destination_ip, Alert.source_ip, Alert.category).where(
+                Alert.status.in_([AlertStatus.OPEN, AlertStatus.INVESTIGATING])
+            )
+        )
+
+        stats: dict[str, dict] = {}
+
+        def _ensure(ip: str):
+            if ip not in stats:
+                stats[ip] = {"brute_force": 0, "phishing": 0, "total": 0}
+
+        for dest_ip, src_ip, category in result:
+            if category == AlertCategory.PHISHING:
+                # Source = la machine qui a cliqué sur le lien phishing
+                if src_ip:
+                    _ensure(src_ip)
+                    stats[src_ip]["phishing"] += 1
+                    stats[src_ip]["total"] += 1
+            else:
+                # Destination = l'asset cible de l'attaque
+                if dest_ip:
+                    _ensure(dest_ip)
+                    stats[dest_ip]["total"] += 1
+                    if category == AlertCategory.BRUTE_FORCE:
+                        stats[dest_ip]["brute_force"] += 1
+
+        return stats
 
     async def _load_open_cves_by_asset(self) -> dict[int, list[str]]:
         """

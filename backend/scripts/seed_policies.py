@@ -182,6 +182,39 @@ POLICIES = [
         "applies_to_tags": ["production"],
         "applies_to_asset_types": ["server"],
     },
+
+    # ══════════════════════════════════════════════════════════════
+    # Règles basées sur les alertes SIEM (cross-correlation)
+    # Ces règles lisent directement les alertes ouvertes dans le SIEM
+    # ══════════════════════════════════════════════════════════════
+
+    {
+        "name":        "Aucune tentative de brute force active",
+        "description": "DORA Art.9 / CIS 4.1 : aucune alerte brute force ouverte ne doit viser cet asset.",
+        "framework":   "dora",
+        "control_id":  "DORA-Art.9.3",
+        "severity":    "high",
+        "rule_type":   "no_brute_force",
+        "rule_config": {"max_attempts": 0},
+    },
+    {
+        "name":        "Aucune navigation phishing détectée",
+        "description": "ISO 27001 A.7.2.2 : aucun utilisateur de cet asset ne doit avoir navigué vers un site phishing.",
+        "framework":   "iso_27001",
+        "control_id":  "ISO-27001-A.7.2.2",
+        "severity":    "high",
+        "rule_type":   "no_phishing_detection",
+        "rule_config": {"max_detections": 0},
+    },
+    {
+        "name":        "Incidents de sécurité traités",
+        "description": "ISO 27001 A.16.1.4 : aucune alerte SIEM ouverte ne doit rester sans traitement.",
+        "framework":   "iso_27001",
+        "control_id":  "ISO-27001-A.16.1.4",
+        "severity":    "medium",
+        "rule_type":   "no_active_alerts",
+        "rule_config": {"max_alerts": 0},
+    },
 ]
 
 
@@ -214,10 +247,10 @@ async def seed_policies():
                 is_active=True,
             )
             db.add(policy)
-            print(f"  ✅ Créée : [{p['framework'].upper()}] {p['name']}")
+            print(f"   Créée : [{p['framework'].upper()}] {p['name']}")
 
         await db.commit()
-        print(f"\n✅ {len(POLICIES)} politiques chargées.")
+        print(f"\n {len(POLICIES)} politiques chargées.")
 
 
 if __name__ == "__main__":

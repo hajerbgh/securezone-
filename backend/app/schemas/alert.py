@@ -43,3 +43,4 @@ class AlertStats(BaseModel):
     medium: int
     low: int
     by_category: Dict[str, int]
+    by_status: Dict[str, int] = {}

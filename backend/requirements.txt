@@ -31,6 +31,7 @@ apscheduler==3.10.4
 
 # Scanning
 python-nmap==0.7.1
+python-gvm>=22.6.0
 
 # Machine Learning
 scikit-learn==1.4.2
