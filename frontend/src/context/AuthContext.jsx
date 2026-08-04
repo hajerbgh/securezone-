@@ -48,3 +48,17 @@ export function useAuth() {
   if (!ctx) throw new Error("useAuth doit être utilisé dans AuthProvider");
   return ctx;
 }
+
+export function useRole() {
+  const { user } = useContext(AuthContext);
+  const role = user?.role || "viewer";
+  return {
+    role,
+    isAdmin:    role === "admin",
+    isAnalyst:  role === "admin" || role === "analyst",
+    isAuditor:  role === "auditor",
+    isViewer:   role === "viewer",
+    canWrite:   role === "admin" || role === "analyst",
+    canAdmin:   role === "admin",
+  };
+}

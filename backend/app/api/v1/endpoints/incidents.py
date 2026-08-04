@@ -208,7 +208,7 @@ async def attach_playbook(
     """Attache un playbook à un incident et démarre les actions auto."""
     incident = await _get_or_404(db, incident_id)
 
-    pb_result = await db.execute(select(Playbook).where(Playbook.id == playbook_id))
+    pb_result = await db.execute(select(Playbook).where(Playbook.id == playbook_id, Playbook.is_active == 1))
     pb = pb_result.scalar_one_or_none()
     if not pb:
         raise HTTPException(status_code=404, detail="Playbook introuvable")
@@ -241,7 +241,7 @@ async def approve_action(
             status_code=409,
             detail=f"Action dans l'état '{action.status}' — ne peut pas être approuvée."
         )
-    if not action.requires_approval:
+    if not action.requires_approval:  # works for Integer 0 too
         raise HTTPException(status_code=400, detail="Cette action ne nécessite pas d'approbation.")
 
     action.status = PlaybookActionStatus.APPROVED
@@ -336,7 +336,7 @@ async def list_playbooks(
     _: User = Depends(get_current_user),
 ):
     """Liste tous les playbooks disponibles."""
-    result = await db.execute(select(Playbook).where(Playbook.is_active == True))
+    result = await db.execute(select(Playbook).where(Playbook.is_active == 1))
     playbooks = result.scalars().all()
     return [
         {

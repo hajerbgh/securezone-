@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import { FileCheck2, FileDown, Loader2, RefreshCw } from "lucide-react";
 import api from "../lib/api";
+import { useRole } from "../context/AuthContext";
 import { Card, SeverityBadge, Spinner, EmptyState } from "../components/ui";
 
 async function downloadComplianceReport(setLoading) {
@@ -26,6 +27,7 @@ export default function Compliance() {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
   const queryClient = useQueryClient();
+  const { canWrite } = useRole();
 
   async function runEvaluation() {
     setEvaluating(true);
@@ -77,19 +79,21 @@ export default function Compliance() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button
-            className="btn btn-ghost"
-            onClick={runEvaluation}
-            disabled={evaluating}
-            title="Lance une évaluation de conformité sur tous les assets"
-          >
-            {evaluating ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-            {evaluating ? "Évaluation…" : "Évaluer maintenant"}
-          </button>
+          {canWrite && (
+            <button
+              className="btn btn-ghost"
+              onClick={runEvaluation}
+              disabled={evaluating}
+              title="Lance une évaluation de conformité sur tous les assets"
+            >
+              {evaluating ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              {evaluating ? "Évaluation…" : "Évaluer maintenant"}
+            </button>
+          )}
           <button
             className="btn btn-primary"
             onClick={() => downloadComplianceReport(setPdfLoading)}

@@ -11,6 +11,7 @@ import Vulnerabilities from "./pages/Vulnerabilities";
 import Compliance from "./pages/Compliance";
 import Incidents from "./pages/Incidents";
 import Phishing from "./pages/Phishing";
+import Admin from "./pages/Admin";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -44,6 +45,7 @@ export default function App() {
               <Route path="/compliance" element={<Compliance />} />
               <Route path="/phishing" element={<Phishing />} />
               <Route path="/incidents" element={<Incidents />} />
+              <Route path="/admin" element={<Admin />} />
             </Route>
           </Routes>
         </BrowserRouter>

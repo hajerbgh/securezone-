@@ -1,11 +1,14 @@
 """
 Script de seed — Playbooks de réponse aux incidents.
 
-4 playbooks concrets pour le lab SecureZone :
+7 playbooks pour le lab SecureZone :
   1. Brute Force       — log IOC → scan VM → [MANUAL] bloquer IP iptables
   2. Phishing          — log IOC → scan poste → [MANUAL] blacklist Squid → notifier
   3. Port Scan         — log IOC → évaluation conformité → [MANUAL] investiguer
   4. Generic High      — scan VM → [MANUAL] analyser → [MANUAL] containment
+  5. DDoS              — log IOC → compliance → rate_limit_asset (AUTO) → notifier
+  6. Ransomware        — log IOC → scan VM → [MANUAL] isolate_host → [MANUAL] sauvegardes
+  7. Exfiltration      — log IOC → compliance → [MANUAL] identifier données → [MANUAL] block_ip
 
 Usage :
     cd backend && .\\venv\\Scripts\\python.exe scripts/seed_playbooks.py
@@ -166,6 +169,163 @@ PLAYBOOKS = [
                 "title": "Décision de containment",
                 "action_type": "manual_task",
                 "description": "Décider et exécuter les mesures de containment adaptées (isolation réseau, blocage IP, désactivation compte, etc.).",
+                "requires_approval": True,
+            },
+        ],
+    },
+
+    # ══════════════════════════════════════════════════════════════
+    # 5. DDoS — 100% automatisable (rate-limiting réversible)
+    # Déclenché par catégorie ddos (future règle CR-007)
+    # ══════════════════════════════════════════════════════════════
+    {
+        "name": "Réponse DDoS",
+        "description": (
+            "Réponse à une attaque DDoS : multi-sources vers un même asset. "
+            "100% automatisable — le rate-limiting est réversible et auto-expirant, "
+            "sans bloquer d'IP individuelles (risque de faux positifs sur IPs usurpées)."
+        ),
+        "trigger_category": "ddos",
+        "trigger_severity_min": "high",
+        "mitre_techniques": ["T1498", "T1499"],
+        "steps": [
+            {
+                "order": 1,
+                "title": "Enregistrer les IPs sources impliquées",
+                "action_type": "log_ioc",
+                "description": "Logger l'ensemble des IPs sources du botnet et l'asset ciblé comme IOCs.",
+                "requires_approval": False,
+            },
+            {
+                "order": 2,
+                "title": "Réévaluer la conformité de l'asset ciblé",
+                "action_type": "run_compliance",
+                "description": "Vérifier que l'asset ciblé respecte les politiques de hardening (exposition inutile de services, etc.).",
+                "requires_approval": False,
+            },
+            {
+                "order": 3,
+                "title": "Appliquer un rate-limiting sur l'asset ciblé",
+                "action_type": "rate_limit_asset",
+                "description": (
+                    "Appliquer une limite temporaire de connexions/sec sur l'asset visé via iptables hashlimit. "
+                    "Auto-expire après 10 minutes — jamais de blocage IP individuel. "
+                    "Réversible sans impact collatéral."
+                ),
+                "requires_approval": False,
+            },
+            {
+                "order": 4,
+                "title": "Notifier l'équipe SOC",
+                "action_type": "send_notification",
+                "description": "Alerter le SOC avec le détail de l'attaque, les IPs sources et le rate-limit appliqué.",
+                "requires_approval": False,
+            },
+        ],
+    },
+
+    # ══════════════════════════════════════════════════════════════
+    # 6. Ransomware — isolation MANUELLE (impact business fort)
+    # Déclenché par catégorie ransomware (FIM Wazuh syscheck — extension future)
+    # ══════════════════════════════════════════════════════════════
+    {
+        "name": "Réponse Ransomware",
+        "description": (
+            "Réponse à un comportement ransomware détecté (chiffrement/renommage massif via FIM Wazuh). "
+            "L'isolation de l'hôte est une étape MANUELLE : un faux positif (ex : sauvegarde légitime) "
+            "causerait une interruption de service non justifiée."
+        ),
+        "trigger_category": "ransomware",
+        "trigger_severity_min": "critical",
+        "mitre_techniques": ["T1486", "T1490", "T1083"],
+        "steps": [
+            {
+                "order": 1,
+                "title": "Enregistrer l'hôte et les IOCs fichiers",
+                "action_type": "log_ioc",
+                "description": "Logger l'IP de l'hôte compromis et les IOCs fichiers (extensions chiffrées, note de rançon détectée).",
+                "requires_approval": False,
+            },
+            {
+                "order": 2,
+                "title": "Scanner les vulnérabilités de l'hôte",
+                "action_type": "trigger_scan",
+                "description": "Identifier le vecteur d'entrée initial (CVE exploitée, service vulnérable) sur l'hôte affecté.",
+                "requires_approval": False,
+            },
+            {
+                "order": 3,
+                "title": "Isoler l'hôte du réseau",
+                "action_type": "isolate_host",
+                "description": (
+                    "Débrancher/isoler l'hôte via iptables ou port switch. "
+                    "ATTENTION : décision à fort impact — valider que ce n'est pas une sauvegarde légitime avant d'exécuter. "
+                    "Nécessite approbation analyste."
+                ),
+                "requires_approval": True,
+            },
+            {
+                "order": 4,
+                "title": "Vérifier les sauvegardes récentes",
+                "action_type": "manual_task",
+                "description": (
+                    "Vérifier l'existence et l'intégrité des sauvegardes (backup) avant toute restauration. "
+                    "Identifier la dernière sauvegarde saine. Documenter dans l'incident."
+                ),
+                "requires_approval": True,
+            },
+        ],
+    },
+
+    # ══════════════════════════════════════════════════════════════
+    # 7. Exfiltration — blocage flux sortant MANUEL (contexte métier requis)
+    # Déclenché par catégorie exfiltration (AlertCategory.EXFILTRATION)
+    # ══════════════════════════════════════════════════════════════
+    {
+        "name": "Réponse Exfiltration",
+        "description": (
+            "Réponse à une suspicion de vol de données : volume sortant anormal vers une IP externe "
+            "à un horaire suspect (détectable via Isolation Forest + règle de corrélation volume). "
+            "Le blocage du flux reste MANUEL : seul un humain peut qualifier si l'export est légitime."
+        ),
+        "trigger_category": "exfiltration",
+        "trigger_severity_min": "high",
+        "mitre_techniques": ["T1048", "T1041", "T1567"],
+        "steps": [
+            {
+                "order": 1,
+                "title": "Enregistrer la destination externe suspecte",
+                "action_type": "log_ioc",
+                "description": "Logger l'IP/domaine de destination externe et l'asset source comme IOCs dans l'incident.",
+                "requires_approval": False,
+            },
+            {
+                "order": 2,
+                "title": "Réévaluer la conformité de l'asset source",
+                "action_type": "run_compliance",
+                "description": "Vérifier si l'asset source respecte les politiques DLP/exfiltration (ports de sortie autorisés, etc.).",
+                "requires_approval": False,
+            },
+            {
+                "order": 3,
+                "title": "Identifier la nature de la donnée concernée",
+                "action_type": "manual_task",
+                "description": (
+                    "Analyser les logs pour qualifier les données exportées : fichiers, base de données, credentials. "
+                    "Vérifier s'il s'agit d'un transfert métier autorisé (export partenaire, backup cloud). "
+                    "Contexte métier requis — ne peut pas être automatisé."
+                ),
+                "requires_approval": True,
+            },
+            {
+                "order": 4,
+                "title": "Bloquer la destination externe",
+                "action_type": "block_ip",
+                "description": (
+                    "Bloquer l'IP de destination via iptables OUTPUT. "
+                    "Fort impact : peut couper une intégration métier légitime. "
+                    "Validation analyste obligatoire après qualification de l'étape 3."
+                ),
                 "requires_approval": True,
             },
         ],

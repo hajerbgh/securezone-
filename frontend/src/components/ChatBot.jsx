@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+﻿import { useState, useRef, useEffect } from "react";
 import { MessageSquare, X, Send, Loader2, Bot, User, ShieldAlert } from "lucide-react";
 import api from "../lib/api";
 
@@ -66,7 +66,7 @@ export default function ChatBot() {
       {/* Floating button */}
       <button
         onClick={() => setOpen((o) => !o)}
-        className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-indigo-600 text-white shadow-lg transition-transform hover:scale-105 hover:bg-indigo-700 focus:outline-none"
+        className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-brand-600 text-white shadow-lg transition-transform hover:scale-105 hover:bg-brand-700 focus:outline-none"
         title="SecureBot — Assistant SIEM"
       >
         {open ? <X className="h-6 w-6" /> : <MessageSquare className="h-6 w-6" />}
@@ -76,13 +76,13 @@ export default function ChatBot() {
       {open && (
         <div className="fixed bottom-24 right-6 z-50 flex h-[520px] w-96 flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl">
           {/* Header */}
-          <div className="flex items-center gap-3 rounded-t-2xl border-b border-slate-100 bg-gradient-to-r from-indigo-600 to-indigo-700 px-4 py-3">
+          <div className="flex items-center gap-3 rounded-t-2xl border-b border-slate-100 bg-gradient-to-r from-brand-600 to-brand-700 px-4 py-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/20">
               <ShieldAlert className="h-5 w-5 text-white" />
             </div>
             <div>
               <p className="text-sm font-semibold text-white">SecureBot</p>
-              <p className="text-xs text-indigo-200">Assistant SIEM · Contexte temps réel</p>
+              <p className="text-xs text-brand-100">Assistant SIEM · Contexte temps réel</p>
             </div>
           </div>
 
@@ -98,7 +98,7 @@ export default function ChatBot() {
                     <button
                       key={s}
                       onClick={() => { setMessage(s); inputRef.current?.focus(); }}
-                      className="w-full rounded-xl border border-slate-200 px-3 py-2 text-left text-xs text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 transition-colors"
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2 text-left text-xs text-slate-600 hover:border-brand-400 hover:bg-brand-50 transition-colors"
                     >
                       {s}
                     </button>
@@ -110,16 +110,16 @@ export default function ChatBot() {
             {history.map((msg, i) => (
               <div key={i} className={`flex gap-2 ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
                 <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
-                  msg.role === "user" ? "bg-indigo-100" : "bg-slate-100"
+                  msg.role === "user" ? "bg-brand-100" : "bg-slate-100"
                 }`}>
                   {msg.role === "user"
-                    ? <User className="h-3.5 w-3.5 text-indigo-600" />
+                    ? <User className="h-3.5 w-3.5 text-brand-600" />
                     : <Bot className="h-3.5 w-3.5 text-slate-600" />
                   }
                 </div>
                 <div className={`max-w-[78%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
                   msg.role === "user"
-                    ? "rounded-tr-sm bg-indigo-600 text-white"
+                    ? "rounded-tr-sm bg-brand-600 text-white"
                     : "rounded-tl-sm bg-slate-100 text-slate-800"
                 }`}>
                   <p className="whitespace-pre-wrap">{msg.content}</p>
@@ -161,13 +161,13 @@ export default function ChatBot() {
               onKeyDown={handleKeyDown}
               placeholder="Posez votre question…"
               rows={1}
-              className="flex-1 resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+              className="flex-1 resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
               style={{ maxHeight: "80px" }}
             />
             <button
               type="submit"
               disabled={!message.trim() || loading}
-              className="flex h-9 w-9 shrink-0 items-center justify-center self-end rounded-xl bg-indigo-600 text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-9 w-9 shrink-0 items-center justify-center self-end rounded-xl bg-brand-600 text-white transition-colors hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {loading ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -181,3 +181,4 @@ export default function ChatBot() {
     </>
   );
 }
+

@@ -1,4 +1,4 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Siren, Clock, Shield, ChevronRight, X, CheckCircle2,
@@ -129,7 +129,7 @@ function ActionRow({ action, onApprove, onExecute, onSkip, busy }) {
               ) : (
                 <button
                   onClick={() => setShowResult((s) => !s)}
-                  className="text-xs text-indigo-500 hover:underline"
+                  className="text-xs text-brand-500 hover:underline"
                 >
                   {showResult ? "Masquer résultat" : "Voir résultat"}
                 </button>
@@ -160,7 +160,7 @@ function ActionRow({ action, onApprove, onExecute, onSkip, busy }) {
             <button
               onClick={() => onExecute(action.id)}
               disabled={busy}
-              className="flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+              className="flex items-center gap-1 rounded-lg border border-brand-100 bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-700 hover:bg-brand-100 disabled:opacity-50"
             >
               <PlayCircle className="h-3 w-3" /> Exécuter
             </button>
@@ -193,11 +193,18 @@ function IncidentDetail({ incidentId, onClose }) {
   const qc = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const [attachingPb, setAttachingPb] = useState(false);
+  const [selectedPb, setSelectedPb] = useState("");
 
   const { data: incident, isLoading } = useQuery({
     queryKey: ["incident", incidentId],
     queryFn: () => api.get(`/incidents/${incidentId}`).then((r) => r.data),
     refetchInterval: 5000,
+  });
+
+  const { data: playbooks = [] } = useQuery({
+    queryKey: ["playbooks"],
+    queryFn: () => api.get("/incidents/playbooks/list").then((r) => r.data),
   });
 
   async function mutate(fn) {
@@ -220,6 +227,18 @@ function IncidentDetail({ incidentId, onClose }) {
   const addNote = () => {
     if (!note.trim()) return;
     mutate(() => api.post(`/incidents/${incidentId}/note`, { note })).then(() => setNote(""));
+  };
+  const attachPlaybook = async () => {
+    if (!selectedPb) return;
+    setBusy(true);
+    try {
+      await api.post(`/incidents/${incidentId}/run-playbook/${selectedPb}`);
+      qc.invalidateQueries({ queryKey: ["incident", incidentId] });
+      qc.invalidateQueries({ queryKey: ["incidents"] });
+      setAttachingPb(false);
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (isLoading) return (
@@ -275,6 +294,52 @@ function IncidentDetail({ incidentId, onClose }) {
           </div>
         )}
 
+        {/* Attacher un playbook (si aucun) */}
+        {!incident.playbook_actions?.length && incident.status !== "closed" && (
+          <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-subtle">
+              Aucun playbook attaché
+            </p>
+            {!attachingPb ? (
+              <button
+                onClick={() => setAttachingPb(true)}
+                className="flex items-center gap-1.5 rounded-lg border border-brand-100 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-700 hover:bg-brand-100"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Attacher un playbook
+              </button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <select
+                  value={selectedPb}
+                  onChange={e => setSelectedPb(e.target.value)}
+                  className="flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-brand-400"
+                >
+                  <option value="">— Choisir un playbook —</option>
+                  {playbooks.map(pb => (
+                    <option key={pb.id} value={pb.id}>
+                      {pb.name} ({pb.steps_count} étapes)
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={attachPlaybook}
+                  disabled={!selectedPb || busy}
+                  className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Confirmer"}
+                </button>
+                <button
+                  onClick={() => setAttachingPb(false)}
+                  className="rounded p-1 text-slate-400 hover:text-slate-600"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Playbook progress */}
         {incident.playbook_actions?.length > 0 && (
           <div>
@@ -282,11 +347,11 @@ function IncidentDetail({ incidentId, onClose }) {
               <p className="text-xs font-semibold uppercase tracking-wider text-ink-subtle">
                 Playbook {incident.playbook_name && `— ${incident.playbook_name}`}
               </p>
-              <span className="text-xs font-medium text-indigo-600">{donePct}% complété</span>
+              <span className="text-xs font-medium text-brand-600">{donePct}% complété</span>
             </div>
             <div className="mb-3 h-1.5 overflow-hidden rounded-full bg-slate-200">
               <div
-                className="h-full rounded-full bg-indigo-500 transition-all"
+                className="h-full rounded-full bg-brand-500 transition-all"
                 style={{ width: `${donePct}%` }}
               />
             </div>
@@ -324,12 +389,12 @@ function IncidentDetail({ incidentId, onClose }) {
             onChange={(e) => setNote(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addNote()}
             placeholder="Ajouter une note…"
-            className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm focus:border-indigo-400 focus:outline-none"
+            className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm focus:border-brand-400 focus:outline-none"
           />
           <button
             onClick={addNote}
             disabled={!note.trim() || busy}
-            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
+            className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-40"
           >
             Ajouter
           </button>
@@ -348,7 +413,7 @@ function IncidentDetail({ incidentId, onClose }) {
             <button
               onClick={() => changeStatus(nextStatus)}
               disabled={busy}
-              className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
             >
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ChevronRight className="h-3.5 w-3.5" />}
               Passer à : {STATUS_LABELS[nextStatus]}
@@ -442,7 +507,7 @@ export default function Incidents() {
               onClick={() => setFilterStatus(s)}
               className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                 filterStatus === s
-                  ? "bg-indigo-600 text-white"
+                  ? "bg-brand-600 text-white"
                   : "bg-slate-100 text-ink-muted hover:bg-slate-200"
               }`}
             >
@@ -468,7 +533,7 @@ export default function Incidents() {
                   key={inc.id}
                   onClick={() => setSelectedId(inc.id === selectedId ? null : inc.id)}
                   className={`flex w-full items-center gap-4 px-5 py-3.5 text-left transition hover:bg-slate-50 ${
-                    selectedId === inc.id ? "bg-indigo-50" : ""
+                    selectedId === inc.id ? "bg-brand-50" : ""
                   }`}
                 >
                   <SeverityBadge severity={inc.severity} />
@@ -505,3 +570,4 @@ export default function Incidents() {
     </div>
   );
 }
+

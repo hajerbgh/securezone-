@@ -30,6 +30,8 @@ class AlertCategory(str, enum.Enum):
     LATERAL_MOVEMENT = "lateral_movement"
     EXFILTRATION = "exfiltration"
     ANOMALY = "anomaly"           # Détection ML (Isolation Forest)
+    DDOS = "ddos"                 # Déni de service distribué (règle CR-007 — extension)
+    RANSOMWARE = "ransomware"     # Chiffrement fichiers FIM Wazuh (syscheck — extension)
     COMPLIANCE = "compliance"
     VULNERABILITY = "vulnerability"
     PHISHING = "phishing"

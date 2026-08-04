@@ -63,6 +63,20 @@ async def _run_migrations():
     logger.info("Migrations DB terminées")
 
 
+async def _siem_collect_job():
+    """Collecte Wazuh périodique — appelée par APScheduler toutes les 60s."""
+    from app.services.siem.engine import siem_engine
+    from app.db.session import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        try:
+            stats = await siem_engine.ingest_once(db)
+            await db.commit()
+            if stats.get("saved", 0) > 0:
+                logger.info(f"SIEM collect : {stats}")
+        except Exception as e:
+            logger.error(f"SIEM collect erreur : {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup : créer les tables puis appliquer les migrations incrémentales
@@ -71,13 +85,29 @@ async def lifespan(app: FastAPI):
 
     await _run_migrations()
 
-    # Démarrer le scheduler de scans
+    # Démarrer le scheduler de scans VM
     from app.services.vm.scheduler import scan_scheduler
     await scan_scheduler.start()
+
+    # Démarrer la collecte SIEM périodique (toutes les 60 secondes)
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    siem_scheduler = AsyncIOScheduler()
+    siem_scheduler.add_job(
+        _siem_collect_job,
+        trigger="interval",
+        seconds=60,
+        id="siem_collect",
+        name="SIEM Wazuh collection",
+        max_instances=1,
+        coalesce=True,
+    )
+    siem_scheduler.start()
+    logger.info("SIEM collection scheduler démarré (intervalle: 60s)")
 
     yield
 
     # Shutdown
+    siem_scheduler.shutdown(wait=False)
     from app.services.vm.scheduler import scan_scheduler
     await scan_scheduler.stop()
     await engine.dispose()

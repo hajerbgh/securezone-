@@ -61,6 +61,16 @@ class IREngine:
             logger.debug(f"Incident déjà existant pour l'alerte #{alert.id}")
             return None
 
+        # MTTD = délai entre le premier événement (first_seen) et la détection par le SIEM (created_at)
+        now = datetime.now(timezone.utc)
+        detected_at = alert.created_at or now
+        first_event = alert.first_seen or detected_at
+        if first_event.tzinfo is None:
+            first_event = first_event.replace(tzinfo=timezone.utc)
+        if detected_at.tzinfo is None:
+            detected_at = detected_at.replace(tzinfo=timezone.utc)
+        mttd = max(0, int((detected_at - first_event).total_seconds() / 60))
+
         # Créer l'incident
         incident = Incident(
             title=f"[AUTO] {alert.title}",
@@ -74,7 +84,8 @@ class IREngine:
             status=IncidentStatus.NEW,
             source_alert_ids=[alert.id],
             risk_score=alert.risk_score or 0.0,
-            detected_at=alert.created_at or datetime.now(timezone.utc),
+            detected_at=detected_at,
+            mttd_minutes=mttd,
             ioc_list=[ip for ip in [alert.source_ip, alert.destination_ip] if ip],
         )
         self.db.add(incident)
@@ -104,7 +115,7 @@ class IREngine:
         result = await self.db.execute(
             select(Playbook).where(
                 Playbook.trigger_category == alert.category.value,
-                Playbook.is_active == True,
+                Playbook.is_active == 1,
             ).limit(1)
         )
         pb = result.scalar_one_or_none()
@@ -115,7 +126,7 @@ class IREngine:
         result = await self.db.execute(
             select(Playbook).where(
                 Playbook.trigger_category == "generic_high",
-                Playbook.is_active == True,
+                Playbook.is_active == 1,
             ).limit(1)
         )
         return result.scalar_one_or_none()
@@ -153,7 +164,7 @@ class IREngine:
         result = await self.db.execute(
             select(PlaybookAction).where(
                 PlaybookAction.incident_id == incident.id,
-                PlaybookAction.requires_approval == False,
+                PlaybookAction.requires_approval == 0,
                 PlaybookAction.status == PlaybookActionStatus.PENDING,
             ).order_by(PlaybookAction.step_order)
         )

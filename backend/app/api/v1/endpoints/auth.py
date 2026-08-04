@@ -37,6 +37,12 @@ async def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 
+@router.get("/users", response_model=list[UserRead], dependencies=[Depends(require_admin)])
+async def list_users(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).order_by(User.created_at.desc()))
+    return result.scalars().all()
+
+
 @router.post("/users", response_model=UserRead, dependencies=[Depends(require_admin)])
 async def create_user(payload: UserCreate, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.username == payload.username))

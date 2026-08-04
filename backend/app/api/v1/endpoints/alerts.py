@@ -1,7 +1,8 @@
 from typing import List, Optional
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from app.db.session import get_db
 from app.models.alert import Alert, AlertStatus, AlertSeverity
 from app.schemas.alert import AlertRead, AlertUpdate, AlertStats
@@ -74,6 +75,58 @@ async def alert_stats(
         by_category=by_category,
         by_status=by_status,
     )
+
+
+@router.get("/history")
+async def alert_history(
+    time_range: str = Query("24h", alias="range", description="Intervalle : 24h | 7d | 30d"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Retourne le nombre d'alertes par heure (24h) ou par jour (7d/30d)."""
+    now = datetime.now(timezone.utc)
+    if time_range == "7d":
+        since = now - timedelta(days=7)
+        trunc = "day"
+        num_buckets = 7
+    elif time_range == "30d":
+        since = now - timedelta(days=30)
+        trunc = "day"
+        num_buckets = 30
+    else:  # 24h
+        since = now - timedelta(hours=24)
+        trunc = "hour"
+        num_buckets = 24
+
+    rows = await db.execute(
+        text(
+            """
+            SELECT date_trunc(:trunc, created_at AT TIME ZONE 'UTC') AS bucket,
+                   COUNT(*) AS cnt
+            FROM alerts
+            WHERE created_at >= :since
+            GROUP BY bucket
+            ORDER BY bucket
+            """
+        ),
+        {"trunc": trunc, "since": since},
+    )
+    raw = rows.fetchall()
+
+    real = {row[0].replace(tzinfo=timezone.utc): int(row[1]) for row in raw}
+    result = []
+    if trunc == "hour":
+        for i in range(num_buckets):
+            bucket = (now - timedelta(hours=num_buckets - 1 - i)).replace(minute=0, second=0, microsecond=0)
+            label = bucket.strftime("%Hh")
+            result.append({"hour": label, "alerts": real.get(bucket, 0)})
+    else:
+        for i in range(num_buckets):
+            bucket = (now - timedelta(days=num_buckets - 1 - i)).replace(hour=0, minute=0, second=0, microsecond=0)
+            label = bucket.strftime("%d/%m")
+            result.append({"hour": label, "alerts": real.get(bucket, 0)})
+
+    return result
 
 
 @router.get("/{alert_id}", response_model=AlertRead)

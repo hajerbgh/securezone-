@@ -215,6 +215,58 @@ class SOARExecutor:
             "message": action.description or "Tâche manuelle — confirmez son exécution dans l'interface.",
         }
 
+    async def _run_rate_limit_asset(self, action: PlaybookAction, incident: Incident, alert) -> dict:
+        """Applique un rate-limiting temporaire sur l'asset ciblé (DDoS)."""
+        target_ip = self._get_target_ip(incident, alert)
+        target = target_ip or "asset-cible"
+        return {
+            "type": "auto_executed",
+            "action": "rate_limit_asset",
+            "target": target,
+            "commands_applied": [
+                f"# Limite de connexions entrantes sur {target} (iptables hashlimit)",
+                f"sudo iptables -A INPUT -d {target} -p tcp -m hashlimit "
+                f"--hashlimit-above 50/sec --hashlimit-burst 100 "
+                f"--hashlimit-mode dstip --hashlimit-name ddos_limit -j DROP",
+                f"# Auto-expire après 10 minutes",
+                f"sudo at now + 10 minutes <<< \"iptables -D INPUT -d {target} -p tcp -m hashlimit ...\"",
+            ],
+            "expires_in": "10 minutes",
+            "message": (
+                f"Rate-limiting appliqué sur {target} : max 50 req/s, expire automatiquement. "
+                "Aucun blocage IP individuel — réversible sans impact collatéral."
+            ),
+        }
+
+    async def _run_isolate_host(self, action: PlaybookAction, incident: Incident, alert) -> dict:
+        """Commandes d'isolation réseau d'un hôte suspecté de ransomware (MANUAL)."""
+        target_ip = self._get_target_ip(incident, alert)
+        if not target_ip:
+            return {"type": "manual", "status": "no_target", "message": "IP hôte non identifiée."}
+
+        return {
+            "type": "manual_command",
+            "target_host": f"Firewall/switch — isoler {target_ip}",
+            "commands": [
+                f"# Option 1 : couper toutes les connexions de l'hôte via iptables",
+                f"sudo iptables -I FORWARD -s {target_ip} -j DROP",
+                f"sudo iptables -I FORWARD -d {target_ip} -j DROP",
+                f"sudo iptables -I INPUT -s {target_ip} -j DROP",
+                f"# Option 2 : désactiver le port switch (si accès SNMP/SSH switch disponible)",
+                f"# ssh admin@switch 'interface Gi0/X ; shutdown'",
+            ],
+            "verify": f"ping -c 2 {target_ip}  # doit être injoignable",
+            "rollback": (
+                f"sudo iptables -D FORWARD -s {target_ip} -j DROP && "
+                f"sudo iptables -D FORWARD -d {target_ip} -j DROP && "
+                f"sudo iptables -D INPUT -s {target_ip} -j DROP"
+            ),
+            "message": (
+                f"ATTENTION : isolation complète de {target_ip}. "
+                "Valider qu'il ne s'agit pas d'une sauvegarde légitime avant d'exécuter."
+            ),
+        }
+
     # ─────────────────────────────────────────────
     # Helpers
     # ─────────────────────────────────────────────

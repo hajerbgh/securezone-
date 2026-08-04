@@ -5,6 +5,7 @@ import { ScanSearch, Play, X, CheckCircle, AlertTriangle, Loader2, ChevronDown }
 import api from "../lib/api";
 import { Card, KpiCard, SeverityBadge, StatusBadge, Spinner, EmptyState } from "../components/ui";
 import { formatNumber } from "../lib/format";
+import { useRole } from "../context/AuthContext";
 
 // ── Modal de lancement de scan ────────────────────────────────
 function ScanModal({ onClose, onStarted }) {
@@ -300,6 +301,7 @@ export default function Vulnerabilities() {
   const [activeScan, setActiveScan] = useState(null);
   const [searchParams] = useSearchParams();
   const searchQuery = searchParams.get("q") || "";
+  const { canWrite } = useRole();
 
   const { data: stats } = useQuery({
     queryKey: ["vuln-stats"],
@@ -336,10 +338,16 @@ export default function Vulnerabilities() {
             CVEs détectées par Nmap et OpenVAS sur le parc
           </p>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>
-          <Play className="h-4 w-4" />
-          Lancer un scan
-        </button>
+        {canWrite ? (
+          <button className="btn btn-primary" onClick={() => setShowModal(true)}>
+            <Play className="h-4 w-4" />
+            Lancer un scan
+          </button>
+        ) : (
+          <span className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-ink-subtle cursor-not-allowed">
+            Lecture seule
+          </span>
+        )}
       </div>
 
       {/* Barre de progression du scan actif */}

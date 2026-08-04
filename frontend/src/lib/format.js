@@ -41,8 +41,8 @@ export const SEVERITY_LABELS = {
   info: "Info",
 };
 
-// Palette pour les graphiques (donut, aires)
+// Palette pour les graphiques (donut, aires) — thème vert MAE
 export const CHART_PALETTE = [
-  "#4F46E5", "#0EA5E9", "#10B981", "#F59E0B",
-  "#EF4444", "#8B5CF6", "#EC4899", "#14B8A6",
+  "#16A34A", "#0EA5E9", "#F59E0B", "#EF4444",
+  "#15803D", "#14B8A6", "#8B5CF6", "#EC4899",
 ];
