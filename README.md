@@ -767,7 +767,7 @@ SecureBot is a floating chat widget available on all authenticated pages. It use
 
 ## Contributing
 
-This is a learning/lab project. If you extend it, consider:
+This is a learning project. If you extend it, consider:
 
 - Adding a Wazuh agent on Metasploitable2 for real-time attack telemetry
 - Implementing ELK Stack integration (Elasticsearch index is already configured)
@@ -778,4 +778,4 @@ This is a learning/lab project. If you extend it, consider:
 
 ## License
 
-MIT License — built for educational purposes.
+Hajer Benghazi — built for educational purposes.
