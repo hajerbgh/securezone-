@@ -314,10 +314,7 @@ GRANT ALL PRIVILEGES ON DATABASE securezone_db TO securezone;
 
 Copy and edit `.env`:
 
-```bash
-cp .env.example .env
-# Edit .env with your values (see Configuration section below)
-```
+
 
 ### 4. Start the backend
 
